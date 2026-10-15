@@ -71,6 +71,7 @@ import kotlinx.coroutines.withContext
 class MainActivity : ComponentActivity() {
     private val controller get() = (application as WhiteVpnApp).controller
     private val nativeIkev2 get() = (application as WhiteVpnApp).nativeIkev2
+    private val l2tpStore get() = (application as WhiteVpnApp).l2tpProfiles
 
     private val vpnPermission = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -161,6 +162,13 @@ class MainActivity : ComponentActivity() {
         setContent {
             val current by controller.state.collectAsState()
             var ikeStatus by remember { mutableStateOf(nativeIkev2.status()) }
+            var l2tpEntries by remember {
+                mutableStateOf(try {
+                    l2tpStore.read()
+                } catch (_: Exception) {
+                    emptyList<L2tpProfile>()
+                })
+            }
             LaunchedEffect(Unit) {
                 while (true) {
                     ikeStatus = nativeIkev2.status()
@@ -176,6 +184,36 @@ class MainActivity : ComponentActivity() {
                 WhiteVpnScreen(
                     state = current,
                     ikeStatus = ikeStatus,
+                    l2tpEntries = l2tpEntries,
+                    onSaveL2tp = { profile ->
+                        try {
+                            l2tpEntries = l2tpStore.upsert(profile)
+                            controller.showMessage("L2TP/IPsec сервер сохранён")
+                            true
+                        } catch (_: Exception) {
+                            controller.showMessage("Не удалось сохранить L2TP/IPsec. Проверьте все поля.")
+                            false
+                        }
+                    },
+                    onDeleteL2tp = { id ->
+                        try {
+                            l2tpEntries = l2tpStore.delete(id)
+                            controller.showMessage("L2TP/IPsec сервер удалён")
+                        } catch (_: Exception) {
+                            controller.showMessage("Не удалось удалить L2TP/IPsec сервер")
+                        }
+                    },
+                    onCopyL2tp = { value ->
+                        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        val clip = ClipData.newPlainText("VPN parameter", value)
+                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                            val extras = android.os.PersistableBundle()
+                            extras.putBoolean(android.content.ClipDescription.EXTRA_IS_SENSITIVE, true)
+                            clip.description.extras = extras
+                        }
+                        clipboard.setPrimaryClip(clip)
+                    },
+                    onOpenL2tpClient = ::openL2tpClient,
                     onStartIkev2 = ::startIkev2,
                     onStopIkev2 = ::stopIkev2,
                     onToggle = {
@@ -212,6 +250,21 @@ class MainActivity : ComponentActivity() {
                 )
                 }
             }
+        }
+    }
+
+    private fun openL2tpClient() {
+        try {
+            val packageName = "org.naruworks.l2tpvpn"
+            val installed = packageManager.getLaunchIntentForPackage(packageName)
+            if (installed != null) {
+                startActivity(installed)
+            } else {
+                val url = "https://play.google.com/store/apps/details?id=" + packageName
+                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+            }
+        } catch (_: Exception) {
+            controller.showMessage("Не удалось открыть совместимый L2TP-клиент")
         }
     }
 
@@ -259,6 +312,11 @@ private val whiteVpnColors = darkColorScheme(
 private fun WhiteVpnScreen(
     state: VpnUiState,
     ikeStatus: Ikev2Status,
+    l2tpEntries: List<L2tpProfile>,
+    onSaveL2tp: (L2tpProfile) -> Boolean,
+    onDeleteL2tp: (String) -> Unit,
+    onCopyL2tp: (String) -> Unit,
+    onOpenL2tpClient: () -> Unit,
     onStartIkev2: (String, String, String, String) -> Unit,
     onStopIkev2: () -> Unit,
     onToggle: () -> Unit,
@@ -276,6 +334,30 @@ private fun WhiteVpnScreen(
     var pendingDeleteId by remember { mutableStateOf<String?>(null) }
     var showGenerator by remember { mutableStateOf(false) }
     var showIkev2Form by remember { mutableStateOf(false) }
+    var showL2tpForm by remember { mutableStateOf(false) }
+    var l2tpEditingId by remember { mutableStateOf("") }
+    var l2tpName by remember { mutableStateOf("") }
+    var l2tpHost by remember { mutableStateOf("") }
+    var l2tpUsername by remember { mutableStateOf("") }
+    var l2tpPassword by remember { mutableStateOf("") }
+    var l2tpPsk by remember { mutableStateOf("") }
+    var l2tpError by remember { mutableStateOf<String?>(null) }
+    var l2tpDetailId by remember { mutableStateOf<String?>(null) }
+    var l2tpDeleteId by remember { mutableStateOf<String?>(null) }
+    var l2tpPingRefresh by remember { mutableIntStateOf(0) }
+    val l2tpPing = remember { mutableStateMapOf<String, Double?>() }
+    LaunchedEffect(l2tpEntries, l2tpPingRefresh) {
+        l2tpPing.clear()
+        val limiter = Semaphore(3)
+        coroutineScope {
+            l2tpEntries.forEach { profile ->
+                launch(Dispatchers.IO) {
+                    val rtt = limiter.withPermit { ServerPing.probe(profile.host) }
+                    withContext(Dispatchers.Main) { l2tpPing[profile.id] = rtt }
+                }
+            }
+        }
+    }
     var ikeServer by remember { mutableStateOf("") }
     var ikeIdentity by remember { mutableStateOf("") }
     var ikeUser by remember { mutableStateOf("") }
@@ -585,14 +667,105 @@ private fun WhiteVpnScreen(
             shape = RoundedCornerShape(18.dp)
         ) {
             Column(Modifier.padding(18.dp)) {
-                Text("L2TP/IPsec • устаревший протокол", fontWeight = FontWeight.Bold)
+                Text("L2TP/IPsec PSK • Мои серверы", fontWeight = FontWeight.Bold)
                 Text(
-                    "На Android 12–16 штатная поддержка L2TP/IPsec часто отсутствует. WhiteVPN не реализует L2TP: для новых серверов лучше IKEv2/IPsec.",
+                    "Добавляйте и сохраняйте адрес, логин, пароль и IPsec PSK. " +
+                        "Это хранилище настроек, не встроенный L2TP-туннель. На Android 13+ " +
+                        "для соединения потребуется отдельный совместимый VPN-клиент.",
                     color = Color(0xFFC7D4E8),
                     fontSize = 13.sp
                 )
-                TextButton(onClick = onOpenLegacySettings) {
-                    Text("Системные настройки VPN ↗")
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = {
+                        l2tpEditingId = ""
+                        l2tpName = ""
+                        l2tpHost = ""
+                        l2tpUsername = ""
+                        l2tpPassword = ""
+                        l2tpPsk = ""
+                        l2tpError = null
+                        showL2tpForm = true
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text("+ Добавить L2TP/IPsec сервер") }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = onOpenLegacySettings) {
+                        Text("Настройки Android ↗")
+                    }
+                    TextButton(onClick = onOpenL2tpClient) {
+                        Text("L2TP-клиент ↗")
+                    }
+                }
+                if (l2tpEntries.isNotEmpty()) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "Сохранено: " + l2tpEntries.size,
+                            color = Color(0xFFC7D4E8),
+                            fontSize = 13.sp
+                        )
+                        TextButton(onClick = { l2tpPingRefresh += 1 }) {
+                            Text("↻ Пинг")
+                        }
+                    }
+                }
+                l2tpEntries.forEach { profile ->
+                    Card(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp),
+                        shape = RoundedCornerShape(15.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = Color(0xFF30415B),
+                            contentColor = Color(0xFFF5F8FF)
+                        )
+                    ) {
+                        Column(Modifier.padding(14.dp)) {
+                            Text(profile.name, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+                            Text(profile.host + " • L2TP/IPsec PSK",
+                                color = Color(0xFFC7D4E8), fontSize = 13.sp)
+                            Text(
+                                if (l2tpPing.containsKey(profile.id)) {
+                                    ServerPing.label(l2tpPing[profile.id])
+                                } else {
+                                    "Проверка пинга..."
+                                },
+                                color = if (l2tpPing[profile.id] != null) {
+                                    Color(0xFF8CF1C7)
+                                } else {
+                                    Color(0xFFF0CE96)
+                                },
+                                fontSize = 12.sp
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                TextButton(onClick = { l2tpDetailId = profile.id }) {
+                                    Text("Параметры")
+                                }
+                                TextButton(onClick = {
+                                    l2tpEditingId = profile.id
+                                    l2tpName = profile.name
+                                    l2tpHost = profile.host
+                                    l2tpUsername = profile.username
+                                    l2tpPassword = profile.password
+                                    l2tpPsk = profile.preSharedKey
+                                    l2tpError = null
+                                    showL2tpForm = true
+                                }) { Text("Изменить") }
+                                TextButton(onClick = { l2tpDeleteId = profile.id }) {
+                                    Text("Удалить", color = Color(0xFFFFB7B7))
+                                }
+                            }
+                        }
+                    }
+                }
+                if (l2tpEntries.isNotEmpty()) {
+                    Text(
+                        "Пинг проверяет ICMP, а не авторизацию L2TP. " +
+                            "Пароли хранятся зашифрованными и не выводятся в карточках.",
+                        color = Color(0xFFC7D4E8), fontSize = 12.sp
+                    )
                 }
             }
         }
@@ -716,6 +889,157 @@ private fun WhiteVpnScreen(
             fontSize = 12.sp,
             color = Color(0xFFB7C6DA),
             textAlign = TextAlign.Center
+        )
+    }
+
+    if (showL2tpForm) {
+        AlertDialog(
+            onDismissRequest = {
+                l2tpPassword = ""
+                l2tpPsk = ""
+                showL2tpForm = false
+            },
+            title = {
+                Text(if (l2tpEditingId.isBlank()) "Добавить L2TP/IPsec"
+                    else "Изменить L2TP/IPsec")
+            },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState())) {
+                    Text(
+                        "L2TP/IPsec с общим ключом (PSK). " +
+                            "На Android 13+ для подключения понадобится отдельное приложение.",
+                        color = Color(0xFFC7D4E8), fontSize = 12.sp
+                    )
+                    OutlinedTextField(
+                        value = l2tpName,
+                        onValueChange = { l2tpName = it.take(100) },
+                        label = { Text("Название") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                    OutlinedTextField(
+                        value = l2tpHost,
+                        onValueChange = { l2tpHost = it.take(253) },
+                        label = { Text("Адрес сервера (домен или IP)") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                    OutlinedTextField(
+                        value = l2tpUsername,
+                        onValueChange = { l2tpUsername = it.take(255) },
+                        label = { Text("Логин L2TP") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                    OutlinedTextField(
+                        value = l2tpPassword,
+                        onValueChange = { l2tpPassword = it.take(512) },
+                        label = { Text("Пароль L2TP") },
+                        visualTransformation =
+                            androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                    OutlinedTextField(
+                        value = l2tpPsk,
+                        onValueChange = { l2tpPsk = it.take(512) },
+                        label = { Text("IPsec PSK (общий ключ)") },
+                        visualTransformation =
+                            androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                    if (l2tpError != null) {
+                        Text(l2tpError.orEmpty(), color = Color(0xFFFFB7B7))
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val draft = L2tpProfile(
+                        id = l2tpEditingId,
+                        name = l2tpName,
+                        host = l2tpHost,
+                        username = l2tpUsername,
+                        password = l2tpPassword,
+                        preSharedKey = l2tpPsk
+                    )
+                    if (!L2tpProfileValidation.isValid(draft)) {
+                        l2tpError = "Заполните все поля. Адрес должен быть доменом или IP, без порта."
+                    } else if (onSaveL2tp(draft)) {
+                        showL2tpForm = false
+                        l2tpPassword = ""
+                        l2tpPsk = ""
+                        l2tpError = null
+                    } else {
+                        l2tpError = "Не удалось сохранить профиль"
+                    }
+                }) { Text("Сохранить") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    l2tpPassword = ""
+                    l2tpPsk = ""
+                    showL2tpForm = false
+                }) { Text("Отмена") }
+            }
+        )
+    }
+
+    val l2tpDetails = l2tpEntries.firstOrNull { it.id == l2tpDetailId }
+    if (l2tpDetails != null) {
+        AlertDialog(
+            onDismissRequest = { l2tpDetailId = null },
+            title = { Text("L2TP/IPsec: " + l2tpDetails.name) },
+            text = {
+                Column {
+                    Text("Сервер: " + l2tpDetails.host)
+                    Text("Логин: " + l2tpDetails.username)
+                    Text("Пароль и PSK скрыты. Можно скопировать их отдельно.")
+                    Text(
+                        "Внимание: секреты в буфере обмена могут быть доступны " +
+                            "другим приложениям. Очистите буфер после настройки.",
+                        color = Color(0xFFF0CE96),
+                        fontSize = 12.sp
+                    )
+                    OutlinedButton(onClick = { onCopyL2tp(l2tpDetails.host) }) {
+                        Text("Копировать адрес")
+                    }
+                    OutlinedButton(onClick = { onCopyL2tp(l2tpDetails.username) }) {
+                        Text("Копировать логин")
+                    }
+                    OutlinedButton(onClick = { onCopyL2tp(l2tpDetails.password) }) {
+                        Text("Копировать пароль")
+                    }
+                    OutlinedButton(onClick = { onCopyL2tp(l2tpDetails.preSharedKey) }) {
+                        Text("Копировать IPsec PSK")
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { l2tpDetailId = null }) {
+                    Text("Закрыть")
+                }
+            }
+        )
+    }
+
+    if (l2tpDeleteId != null) {
+        AlertDialog(
+            onDismissRequest = { l2tpDeleteId = null },
+            title = { Text("Удалить L2TP/IPsec сервер?") },
+            text = { Text("Сохранённые реквизиты будут удалены из WhiteVPN.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    l2tpDeleteId?.let(onDeleteL2tp)
+                    l2tpDeleteId = null
+                }) { Text("Удалить", color = Color(0xFFFFB7B7)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { l2tpDeleteId = null }) {
+                    Text("Отмена")
+                }
+            }
         )
     }
 

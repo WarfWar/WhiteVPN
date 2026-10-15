@@ -108,3 +108,35 @@ References:
 This Android build and its tests do not prove successful VPN handshake or
 traffic protection in production; test with known working servers and inspect
 Android's actual VPN state and routing on a device.
+
+
+## WhiteVPN 0.5.0 — L2TP/IPsec PSK server management
+
+Users can now add, edit, and delete **L2TP/IPsec PSK server profiles** in the
+"Другие протоколы" section of the app:
+
+- Friendly server name and hostname/IP address (without a port).
+- L2TP username and password.
+- IPsec pre-shared key (PSK).
+- Separate manual clipboard copying of each parameter for client setup.
+- Optional device-side ICMP ping to saved L2TP server hostname.
+- The list of L2TP settings is encrypted at rest using a separate Android
+  Keystore AES-256-GCM key and AtomicFile. Password/PSK fields are masked.
+- The L2TP server database is not included in Android automatic backups.
+
+**Protocol limitations:** This is secure profile management, NOT a built-in
+L2TP/IPsec client. In particular, Android 13+ removed the old native L2TP
+option. Use a separately installed L2TP/IPsec-compatible client on these
+devices; the app has a link to an available Play Store L2TP client, but no
+verified deep link to import credentials or start that third-party VPN.
+The user must copy and enter the credentials in the chosen client manually.
+The system VPN settings shortcut is retained for older devices that still
+offer L2TP. WhiteVPN never displays a fake "connected" state.
+
+The optional L2TP app referenced in the UI is provided by an independent
+publisher; WhiteVPN does not endorse its privacy practices, guarantee
+compatibility or bundle any code from it. Sharing secrets via Android clipboard
+is explicitly user-initiated and carries the usual clipboard-access risks.
+
+Do not share real IPsec PSKs and VPN passwords in screenshots, issues, or
+public GitHub repositories. All VPN profiles are user-supplied.
