@@ -40,3 +40,37 @@ multi-profile encrypted store. Old encrypted data is retained as a migration
 backup, and app backup is disabled.
 
 No remote website is sent stored private keys by WhiteVPN itself.
+
+
+## WhiteVPN 0.3.0
+
+- Contrast fix: Material3 uses a dark Surface with explicit light content color.
+  Every card also declares light content text, instead of black-on-dark text.
+- Best-effort device-side ICMP ping for the ten VPNBook hosts with refresh,
+  three concurrent probes and 3.5-second timeouts. No ping response does not
+  mean the UDP WireGuard port is unreachable.
+- Local WireGuard wizard: enter your OWN server endpoint, its public key, the
+  address assigned to the client and DNS. New client keys are generated locally
+  using the official WireGuard library and the validated configuration is
+  encrypted on disk. You MUST register the public key it displays with your
+  server administrator. Never register or share your client private key.
+- OpenVPN hand-off: select a .ovpn file and open it in a separate compatible
+  VPN application through Android ACTION_VIEW with the OpenVPN profile MIME.
+  WhiteVPN does NOT have an embedded OpenVPN tunneling engine yet.
+- L2TP/IPsec legacy: NOT implemented. Android 12 and later no longer expose
+  this option on many devices. The button opens Android VPN settings; modern
+  IPsec users should prefer IKEv2/IPsec.
+
+## Automatic configuration limitations
+
+VPNBook requires users to accept its terms and complete a site check, then
+registers a temporary WireGuard peer on its own server. There is no documented
+public API to automate that safely. Client-side key generation by itself does
+NOT provision VPNBook or any other third-party server. We do not attempt to
+bypass the provider's check and do not advertise fake free credentials.
+
+For OpenVPN on Android you can use a separate client such as
+https://github.com/schwabe/ics-openvpn or an app that handles .ovpn files.
+
+Measured ping is not a WireGuard handshake check, connection proof, or a
+security guarantee. Test on real phones and networks before relying on it.
