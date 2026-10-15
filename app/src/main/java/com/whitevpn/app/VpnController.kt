@@ -17,7 +17,12 @@ import kotlinx.coroutines.withContext
 
 enum class VpnStatus { DISCONNECTED, CONNECTING, CONNECTED, DISCONNECTING }
 
-data class ProfileSummary(val id: String, val name: String, val provider: String)
+data class ProfileSummary(
+    val id: String,
+    val name: String,
+    val provider: String,
+    val endpointHost: String?
+)
 data class VpnUiState(
     val status: VpnStatus = VpnStatus.DISCONNECTED,
     val profiles: List<ProfileSummary> = emptyList(),
@@ -51,7 +56,10 @@ class VpnController(application: Application) {
 
     private fun ui(saved: SavedProfiles, current: VpnUiState = VpnUiState()): VpnUiState =
         current.copy(
-            profiles = saved.entries.map { ProfileSummary(it.id, it.name, it.provider) },
+            profiles = saved.entries.map {
+                ProfileSummary(it.id, it.name, it.provider,
+                    VpnEndpoint.hostFromConfig(it.configuration))
+            },
             selectedId = saved.selectedId, message = null
         )
 

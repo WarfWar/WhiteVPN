@@ -61,6 +61,7 @@ import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.nio.charset.StandardCharsets
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
@@ -69,6 +70,7 @@ import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
     private val controller get() = (application as WhiteVpnApp).controller
+    private val nativeIkev2 get() = (application as WhiteVpnApp).nativeIkev2
 
     private val vpnPermission = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -95,6 +97,21 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private val ikeConsent = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            try {
+                nativeIkev2.start()
+                controller.showMessage("Запрос IKEv2 отправлен Android. Ожидаем состояние подключения.")
+            } catch (_: Exception) {
+                controller.showMessage("Не удалось запустить IKEv2/IPsec")
+            }
+        } else {
+            controller.showMessage("Разрешение на IKEv2/IPsec отклонено")
+        }
+    }
+
     private val chooseOpenVpn = registerForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { uri ->
@@ -114,10 +131,42 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun startIkev2(server: String, identity: String, user: String, password: String) {
+        if (controller.state.value.status != VpnStatus.DISCONNECTED) {
+            controller.showMessage("Для подключения IKEv2 сначала отключите WireGuard")
+            return
+        }
+        try {
+            val intent = nativeIkev2.provision(server, identity, user, password)
+            if (intent == null) {
+                nativeIkev2.start()
+            } else {
+                ikeConsent.launch(intent)
+            }
+        } catch (_: Exception) {
+            controller.showMessage("Ошибка IKEv2: проверьте адрес, логин, пароль и поддержку IPsec.")
+        }
+    }
+
+    private fun stopIkev2() {
+        try {
+            nativeIkev2.stop()
+        } catch (_: Exception) {
+            controller.showMessage("Не удалось отключить IKEv2/IPsec")
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
             val current by controller.state.collectAsState()
+            var ikeStatus by remember { mutableStateOf(nativeIkev2.status()) }
+            LaunchedEffect(Unit) {
+                while (true) {
+                    ikeStatus = nativeIkev2.status()
+                    delay(2000)
+                }
+            }
             MaterialTheme(colorScheme = whiteVpnColors) {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
@@ -126,10 +175,20 @@ class MainActivity : ComponentActivity() {
                 ) {
                 WhiteVpnScreen(
                     state = current,
+                    ikeStatus = ikeStatus,
+                    onStartIkev2 = ::startIkev2,
+                    onStopIkev2 = ::stopIkev2,
                     onToggle = {
                         when (current.status) {
                             VpnStatus.CONNECTED -> controller.disconnect()
-                            VpnStatus.DISCONNECTED -> requestVpnPermission()
+                            VpnStatus.DISCONNECTED -> {
+                                if (nativeIkev2.status() == Ikev2Status.CONNECTED ||
+                                    nativeIkev2.status() == Ikev2Status.CONNECTING) {
+                                    controller.showMessage("Сначала отключите IKEv2/IPsec")
+                                } else {
+                                    requestVpnPermission()
+                                }
+                            }
                             else -> Unit
                         }
                     },
@@ -199,6 +258,9 @@ private val whiteVpnColors = darkColorScheme(
 @Composable
 private fun WhiteVpnScreen(
     state: VpnUiState,
+    ikeStatus: Ikev2Status,
+    onStartIkev2: (String, String, String, String) -> Unit,
+    onStopIkev2: () -> Unit,
     onToggle: () -> Unit,
     onImport: () -> Unit,
     onSave: (String) -> Boolean,
@@ -213,6 +275,11 @@ private fun WhiteVpnScreen(
     var pastedText by remember { mutableStateOf("") }
     var pendingDeleteId by remember { mutableStateOf<String?>(null) }
     var showGenerator by remember { mutableStateOf(false) }
+    var showIkev2Form by remember { mutableStateOf(false) }
+    var ikeServer by remember { mutableStateOf("") }
+    var ikeIdentity by remember { mutableStateOf("") }
+    var ikeUser by remember { mutableStateOf("") }
+    var ikePassword by remember { mutableStateOf("") }
     var generatedPublicKey by remember { mutableStateOf<String?>(null) }
     var endpoint by remember { mutableStateOf("") }
     var serverKey by remember { mutableStateOf("") }
@@ -221,6 +288,25 @@ private fun WhiteVpnScreen(
     var generatorError by remember { mutableStateOf<String?>(null) }
 
     var pingRefresh by remember { mutableIntStateOf(0) }
+    var savedPingRefresh by remember { mutableIntStateOf(0) }
+    val savedPing = remember { mutableStateMapOf<String, Double?>() }
+    LaunchedEffect(savedPingRefresh, state.profiles) {
+        savedPing.clear()
+        val limiter = Semaphore(3)
+        coroutineScope {
+            state.profiles.forEach { profile ->
+                val host = profile.endpointHost
+                if (host != null) {
+                    launch(Dispatchers.IO) {
+                        val rtt = limiter.withPermit { ServerPing.probe(host) }
+                        withContext(Dispatchers.Main) {
+                            savedPing[profile.id] = rtt
+                        }
+                    }
+                }
+            }
+        }
+    }
     val pingResults = remember { mutableStateMapOf<String, Double?>() }
     LaunchedEffect(pingRefresh) {
         pingResults.clear()
@@ -320,7 +406,8 @@ private fun WhiteVpnScreen(
         Spacer(Modifier.height(24.dp))
         Button(
             onClick = onToggle,
-            enabled = state.configured && !isBusy,
+            enabled = state.configured && !isBusy &&
+                ikeStatus != Ikev2Status.CONNECTED && ikeStatus != Ikev2Status.CONNECTING,
             modifier = Modifier.fillMaxWidth().height(62.dp),
             shape = RoundedCornerShape(20.dp),
             colors = ButtonDefaults.buttonColors(
@@ -391,6 +478,21 @@ private fun WhiteVpnScreen(
             fontSize = 21.sp,
             fontWeight = FontWeight.Bold
         )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End
+        ) {
+            OutlinedButton(
+                onClick = { savedPingRefresh += 1 },
+                enabled = state.profiles.any { it.endpointHost != null }
+            ) { Text("↻ Проверить пинг") }
+        }
+        Text(
+            "Задержка до Endpoint каждого сохранённого WireGuard-профиля (ICMP). Нет ответа не означает, что VPN не работает.",
+            modifier = Modifier.fillMaxWidth(),
+            color = Color(0xFFC7D4E8),
+            fontSize = 12.sp
+        )
         Spacer(Modifier.height(10.dp))
         if (state.profiles.isEmpty()) {
             Text(
@@ -412,6 +514,20 @@ private fun WhiteVpnScreen(
                         profile.provider + if (selected) " • Выбран" else "",
                         color = Color(0xFFC7D4E8),
                         fontSize = 12.sp
+                    )
+                    Text(
+                        when {
+                            profile.endpointHost == null -> "Пинг недоступен: нет Endpoint"
+                            !savedPing.containsKey(profile.id) -> "Проверка пинга..."
+                            else -> ServerPing.label(savedPing[profile.id])
+                        } + (profile.endpointHost?.let { " • " + it } ?: ""),
+                        fontSize = 13.sp,
+                        color = if (savedPing[profile.id] != null) {
+                            Color(0xFF8CF1C7)
+                        } else {
+                            Color(0xFFF0CE96)
+                        },
+                        modifier = Modifier.padding(top = 6.dp, bottom = 4.dp)
                     )
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         OutlinedButton(
@@ -477,6 +593,44 @@ private fun WhiteVpnScreen(
                 )
                 TextButton(onClick = onOpenLegacySettings) {
                     Text("Системные настройки VPN ↗")
+                }
+            }
+        }
+
+        Spacer(Modifier.height(12.dp))
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(
+                containerColor = Color(0xFF22334D),
+                contentColor = Color(0xFFF5F8FF)
+            ),
+            shape = RoundedCornerShape(18.dp)
+        ) {
+            Column(Modifier.padding(18.dp)) {
+                Text("IKEv2/IPsec • встроенный Android", fontWeight = FontWeight.Bold)
+                Text(
+                    when (ikeStatus) {
+                        Ikev2Status.UNSUPPORTED -> "IKEv2 через VpnManager недоступен на этом устройстве (нужен Android 13+ с IPsec tunnels)."
+                        Ikev2Status.CONNECTED -> "Подключено: Android подтвердил состояние IKEv2."
+                        Ikev2Status.CONNECTING -> "Android устанавливает IKEv2-соединение..."
+                        Ikev2Status.FAILED -> "Ошибка IKEv2. Проверьте сервер, авторизацию и настройки Android."
+                        Ikev2Status.DISCONNECTED -> "Для своего IKEv2-сервера: EAP (логин/пароль) и проверка сертификата системой Android."
+                    },
+                    color = Color(0xFFC7D4E8),
+                    fontSize = 13.sp
+                )
+                Spacer(Modifier.height(8.dp))
+                if (ikeStatus == Ikev2Status.CONNECTED ||
+                    ikeStatus == Ikev2Status.CONNECTING) {
+                    OutlinedButton(onClick = onStopIkev2) {
+                        Text("Отключить IKEv2")
+                    }
+                } else {
+                    OutlinedButton(
+                        onClick = { showIkev2Form = true },
+                        enabled = ikeStatus != Ikev2Status.UNSUPPORTED &&
+                            state.status == VpnStatus.DISCONNECTED
+                    ) { Text("Настроить и подключить IKEv2") }
                 }
             }
         }
@@ -562,6 +716,66 @@ private fun WhiteVpnScreen(
             fontSize = 12.sp,
             color = Color(0xFFB7C6DA),
             textAlign = TextAlign.Center
+        )
+    }
+
+    if (showIkev2Form) {
+        AlertDialog(
+            onDismissRequest = {
+                ikePassword = ""
+                showIkev2Form = false
+            },
+            title = { Text("IKEv2/IPsec — EAP") },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState())) {
+                    Text(
+                        "Используйте данные своего IKEv2-сервера. При первом подключении Android попросит разрешение.",
+                        fontSize = 13.sp, color = Color(0xFFC7D4E8)
+                    )
+                    OutlinedTextField(
+                        value = ikeServer,
+                        onValueChange = { ikeServer = it.take(253) },
+                        label = { Text("VPN-сервер, например vpn.example.com") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                    OutlinedTextField(
+                        value = ikeIdentity,
+                        onValueChange = { ikeIdentity = it.take(253) },
+                        label = { Text("IKEv2 ID сервера") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                    OutlinedTextField(
+                        value = ikeUser,
+                        onValueChange = { ikeUser = it.take(255) },
+                        label = { Text("Имя пользователя") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                    OutlinedTextField(
+                        value = ikePassword,
+                        onValueChange = { ikePassword = it.take(1024) },
+                        label = { Text("Пароль") },
+                        visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    onStartIkev2(ikeServer, ikeIdentity, ikeUser, ikePassword)
+                    ikePassword = ""
+                    showIkev2Form = false
+                }) { Text("Подключить") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    ikePassword = ""
+                    showIkev2Form = false
+                }) { Text("Отмена") }
+            }
         )
     }
 

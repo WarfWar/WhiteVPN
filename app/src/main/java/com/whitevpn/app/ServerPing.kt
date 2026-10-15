@@ -7,8 +7,8 @@ import java.util.concurrent.TimeUnit
  * Best-effort ICMP echo. Some hosts or networks block ICMP even if WireGuard
  * works. Never equate a failed ping with an offline VPN service.
  *
- * Hostnames MUST come from our fixed, reviewed catalog. We invoke the executable
- * directly (no shell) and never accept arbitrary commands or user-controlled args.
+ * The host can come from a validated saved WireGuard Endpoint. The process
+ * is launched directly with safe characters only; never through a shell.
  */
 object ServerPing {
     private val rttRegex = Regex("""time[=<]\s*(\d+(?:[.,]\d+)?)\s*ms""", RegexOption.IGNORE_CASE)
@@ -17,8 +17,16 @@ object ServerPing {
         rttRegex.find(output)?.groupValues?.getOrNull(1)
             ?.replace(',', '.')?.toDoubleOrNull()
 
+    // A hostname/IP cannot start with a dash or inject ping CLI flags/arguments.
+    // Unicode names must already be converted to ASCII (IDNA) by config owners.
+    private val dnsHost = Regex("^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$")
+    private val ipv6Host = Regex("^[0-9A-Fa-f:]{2,39}$")
+
+    fun validHost(host: String): Boolean =
+        host.length in 1..253 && (dnsHost.matches(host) || ipv6Host.matches(host))
+
     fun probe(host: String): Double? {
-        if (FreeServerCatalog.servers.none { it.host == host }) return null
+        if (!validHost(host)) return null
         var process: Process? = null
         return try {
             process = ProcessBuilder(

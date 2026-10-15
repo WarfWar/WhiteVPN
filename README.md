@@ -74,3 +74,37 @@ https://github.com/schwabe/ics-openvpn or an app that handles .ovpn files.
 
 Measured ping is not a WireGuard handshake check, connection proof, or a
 security guarantee. Test on real phones and networks before relying on it.
+
+
+## WhiteVPN 0.4.0 — saved profile ping and platform IKEv2
+
+- The **My connections** cards now display device-side best-effort ICMP latency to the
+  validated WireGuard peer Endpoint of **each saved profile** and include a
+  refresh button. Host-only information is exposed to the UI: private keys
+  and peer key material are not logged or sent to any diagnostics service.
+- The endpoint parser handles standard host:port and bracketed IPv6 endpoints.
+  The ping subprocess only accepts strictly validated ASCII hostnames/IPs,
+  with a strict timeout and concurrency cap; it is never run via a shell.
+- ICMP and WireGuard/UDP are different. No ping reply is not a proof that a
+  VPN server is down. Ping while connected might traverse the active tunnel.
+- **IKEv2/IPsec (EAP username/password)** is now provisioned through Android's
+  built-in VpnManager, using the system's VPN consent screen and reporting the
+  **actual native profile state** on Android 13+ devices that support
+  IPsec tunnels. The client restricts concurrent WireGuard and IKEv2
+  connections. Its IKEv2 form credentials are handed only to Android's
+  platform VPN service and are not stored in WhiteVPN's WireGuard profile
+  database. No IKEv2 server, subscription, or credentials are provided.
+- Compatibility: IKEv2 is disabled on Android versions without the required
+  API or hardware feature. The built-in OpenVPN engine remains *not yet
+  integrated*. The existing .ovpn hand-off to a separate OpenVPN client works
+  as before. Legacy L2TP/IPsec is also not implemented.
+
+References:
+- Android platform VpnManager: https://developer.android.com/reference/android/net/VpnManager
+- Ikev2VpnProfile: https://developer.android.com/reference/android/net/Ikev2VpnProfile.Builder
+- The OpenVPN for Android implementation is GPL-licensed and not a drop-in SDK:
+  https://github.com/schwabe/ics-openvpn
+
+This Android build and its tests do not prove successful VPN handshake or
+traffic protection in production; test with known working servers and inspect
+Android's actual VPN state and routing on a device.
