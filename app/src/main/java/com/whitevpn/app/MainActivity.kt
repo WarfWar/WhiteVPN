@@ -1,6 +1,8 @@
 package com.whitevpn.app
 
 import android.app.Activity
+import android.content.Intent
+import android.net.Uri
 import android.net.VpnService
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -93,9 +95,24 @@ class MainActivity : ComponentActivity() {
                         }
                     },
                     onImport = { chooseConfig.launch(arrayOf("*/*")) },
-                    onSave = controller::saveConfiguration
+                    onSave = controller::saveConfiguration,
+                    onSelect = controller::selectProfile,
+                    onDelete = controller::deleteProfile,
+                    onOpenFreeServer = ::openFreeServer
                 )
             }
+        }
+    }
+
+    private fun openFreeServer(server: FreeServer) {
+        controller.showMessage(
+            "На сайте VPNBook выберите сервер " + server.host +
+                ", создайте личный профиль и импортируйте файл .conf в WhiteVPN."
+        )
+        try {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(FreeServerCatalog.generatorUrl)))
+        } catch (_: Exception) {
+            controller.showMessage("Не удалось открыть сайт VPNBook в браузере")
         }
     }
 
@@ -132,10 +149,14 @@ private fun WhiteVpnScreen(
     state: VpnUiState,
     onToggle: () -> Unit,
     onImport: () -> Unit,
-    onSave: (String) -> Boolean
+    onSave: (String) -> Boolean,
+    onSelect: (String) -> Unit,
+    onDelete: (String) -> Unit,
+    onOpenFreeServer: (FreeServer) -> Unit
 ) {
     var showPasteDialog by remember { mutableStateOf(false) }
     var pastedText by remember { mutableStateOf("") }
+    var pendingDeleteId by remember { mutableStateOf<String?>(null) }
     val isBusy = state.status == VpnStatus.CONNECTING ||
         state.status == VpnStatus.DISCONNECTING
     val running = state.status == VpnStatus.CONNECTED
@@ -210,7 +231,7 @@ private fun WhiteVpnScreen(
             when {
                 !state.configured -> "Добавьте конфигурацию WireGuard"
                 running -> "Туннель активен. Доступность сервера не проверена."
-                else -> "Конфигурация готова к подключению"
+                else -> "Выбран профиль: " + (state.activeName ?: "Нет")
             },
             color = Color(0xFF9AABC3),
             textAlign = TextAlign.Center,
@@ -276,12 +297,121 @@ private fun WhiteVpnScreen(
             }
         }
 
+        Spacer(Modifier.height(25.dp))
+        Text(
+            "Мои подключения",
+            modifier = Modifier.fillMaxWidth(),
+            fontSize = 21.sp,
+            fontWeight = FontWeight.Bold
+        )
+        Spacer(Modifier.height(10.dp))
+        if (state.profiles.isEmpty()) {
+            Text(
+                "Пока нет сохранённых профилей. Выберите бесплатный сервер ниже и получите .conf на сайте провайдера.",
+                color = Color(0xFF9AABC3),
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+        state.profiles.forEach { profile ->
+            val selected = state.selectedId == profile.id
+            Card(
+                modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp),
+                shape = RoundedCornerShape(17.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF172237))
+            ) {
+                Column(Modifier.padding(15.dp)) {
+                    Text(profile.name, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                    Text(
+                        profile.provider + if (selected) " • Выбран" else "",
+                        color = Color(0xFF9AABC3),
+                        fontSize = 12.sp
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        OutlinedButton(
+                            onClick = { onSelect(profile.id) },
+                            enabled = !selected && state.status == VpnStatus.DISCONNECTED
+                        ) { Text(if (selected) "Выбран" else "Выбрать") }
+                        TextButton(
+                            onClick = { pendingDeleteId = profile.id },
+                            enabled = state.status == VpnStatus.DISCONNECTED
+                        ) {
+                            Text("Удалить", color = Color(0xFFF2B4B4))
+                        }
+                    }
+                }
+            }
+        }
+
+        Spacer(Modifier.height(24.dp))
+        Text(
+            "Бесплатные серверы",
+            modifier = Modifier.fillMaxWidth(),
+            fontSize = 21.sp,
+            fontWeight = FontWeight.Bold
+        )
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "VPNBook • 10 открытых серверов в 5 странах. Для каждого подключения нужно сначала создать бесплатный личный WireGuard-профиль.",
+            color = Color(0xFF9AABC3),
+            fontSize = 14.sp
+        )
+        Spacer(Modifier.height(14.dp))
+        FreeServerCatalog.servers.groupBy { it.country }.forEach { (country, servers) ->
+            Text(
+                country,
+                modifier = Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 8.dp),
+                color = Color(0xFFBECDE2),
+                fontWeight = FontWeight.SemiBold
+            )
+            servers.forEach { server ->
+                Card(
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                    shape = RoundedCornerShape(17.dp),
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF172237))
+                ) {
+                    Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+                        Text(server.flag + "  " + server.name, fontWeight = FontWeight.Bold)
+                        Text(
+                            server.host,
+                            fontSize = 12.sp,
+                            color = Color(0xFF9AABC3)
+                        )
+                        TextButton(onClick = { onOpenFreeServer(server) }) {
+                            Text("Получить бесплатный профиль ↗")
+                        }
+                    }
+                }
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "VPNBook: один профиль на одно устройство, срок действия — 7 дней. Провайдер хранит IP-адрес и время подключения до недели. Серверы сторонние, доступность не проверяется в реальном времени.",
+            color = Color(0xFF9AABC3),
+            fontSize = 12.sp
+        )
         Spacer(Modifier.height(22.dp))
         Text(
-            "WhiteVPN • WireGuard\nНужен собственный сервер или профиль провайдера",
+            "WhiteVPN • WireGuard • независимый клиент, не связанный с VPNBook",
             fontSize = 12.sp,
             color = Color(0xFF8293AD),
             textAlign = TextAlign.Center
+        )
+    }
+
+    if (pendingDeleteId != null) {
+        AlertDialog(
+            onDismissRequest = { pendingDeleteId = null },
+            title = { Text("Удалить профиль?") },
+            text = { Text("Конфигурация будет удалена из WhiteVPN. На сервере провайдера это действие ничего не меняет.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    pendingDeleteId?.let(onDelete)
+                    pendingDeleteId = null
+                }) { Text("Удалить", color = Color(0xFFF2B4B4)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDeleteId = null }) { Text("Отмена") }
+            }
         )
     }
 
