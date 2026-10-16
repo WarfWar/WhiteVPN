@@ -403,6 +403,11 @@ private fun WhiteVpnScreen(
     var pendingDeleteId by remember { mutableStateOf<String?>(null) }
     var showGenerator by remember { mutableStateOf(false) }
     var showIkev2Form by remember { mutableStateOf(false) }
+    var activeProtocol by remember { mutableStateOf("WireGuard") }
+    var l2tpSource by remember { mutableStateOf("Мои") }
+    var selectedL2tpId by remember { mutableStateOf<String?>(null) }
+    var catalogPingRefresh by remember { mutableIntStateOf(0) }
+    val catalogPing = remember { mutableStateMapOf<String, Double?>() }
     var showL2tpForm by remember { mutableStateOf(false) }
     var l2tpEditingId by remember { mutableStateOf("") }
     var l2tpName by remember { mutableStateOf("") }
@@ -469,6 +474,28 @@ private fun WhiteVpnScreen(
         }
     }
 
+    LaunchedEffect(activeProtocol, l2tpSource, catalogPingRefresh, ipSpeedServers, vpnGateServers) {
+        if (activeProtocol != "L2TP" || l2tpSource == "Мои") return@LaunchedEffect
+        // Limit probes for volatile public directories; never probe on the UI thread.
+        val hosts = if (l2tpSource == "IPSpeed") {
+            ipSpeedServers.map { it.ip }
+        } else {
+            vpnGateServers.map { it.host }
+        }
+        val limiter = Semaphore(4)
+        coroutineScope {
+            hosts.distinct().take(48).forEach { host ->
+                if (!catalogPing.containsKey(host)) {
+                    launch(Dispatchers.IO) {
+                        val result = limiter.withPermit { ServerPing.probe(host) }
+                        withContext(Dispatchers.Main) {
+                            catalogPing[host] = result
+                        }
+                    }
+                }
+            }
+        }
+    }
     var l2tpPingRefresh by remember { mutableIntStateOf(0) }
     val l2tpPing = remember { mutableStateMapOf<String, Double?>() }
     LaunchedEffect(l2tpEntries, l2tpPingRefresh) {
