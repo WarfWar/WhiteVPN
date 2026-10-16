@@ -20,6 +20,7 @@ import com.arcansecurity.vpn.l2tpipsec.platform.AndroidTunProvider
 import com.arcansecurity.vpn.l2tpipsec.platform.AndroidUdpSocketFactory
 import java.net.InetAddress
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Experimental IKEv1 / ESP / L2TP / PPP full-device VpnService.
@@ -31,6 +32,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  */
 class L2tpTunnelService : VpnService() {
     private val running = AtomicBoolean(false)
+    private val sessionToken = AtomicInteger(0)
+    @Volatile private var watchdog: Thread? = null
     @Volatile private var activeId: String? = null
     @Volatile private var tunnel: L2tpIpsecTunnel? = null
     @Volatile private var socketFactory: AndroidUdpSocketFactory? = null
@@ -96,6 +99,8 @@ class L2tpTunnelService : VpnService() {
         if (!running.compareAndSet(false, true)) return
         activeId = profileId
         userStopped = false
+        val token = sessionToken.incrementAndGet()
+        startWatchdog(token, profileId)
         L2tpRuntime.update(L2tpConnectionPhase.CONNECTING, profileId, "Открываем IKEv1/IPsec")
 
         worker = Thread({
@@ -182,6 +187,12 @@ class L2tpTunnelService : VpnService() {
                 tunnel = null
                 activeId = null
                 running.set(false)
+                sessionToken.incrementAndGet()
+                watchdog?.interrupt()
+                watchdog = null
+                if (userStopped || L2tpRuntime.state.value.phase == L2tpConnectionPhase.DISCONNECTING) {
+                    L2tpRuntime.update(L2tpConnectionPhase.IDLE, null, "Отключено")
+                }
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
             }
@@ -191,10 +202,37 @@ class L2tpTunnelService : VpnService() {
         }
     }
 
+    private fun startWatchdog(token: Int, profileId: String) {
+        watchdog = Thread({
+            try {
+                Thread.sleep(CONNECTION_TIMEOUT_MS)
+                if (token == sessionToken.get() && running.get() &&
+                    L2tpRuntime.state.value.phase == L2tpConnectionPhase.CONNECTING) {
+                    L2tpRuntime.update(
+                        L2tpConnectionPhase.FAILED, profileId,
+                        "Таймаут 55 секунд: сервер не завершил IKE/L2TP/PPP. " +
+                            "Проверьте UDP 500/4500 и совместимость IPsec."
+                    )
+                    tunnel?.stop()
+                    socketFactory?.closeAll()
+                    worker?.interrupt()
+                    // Do not block the main thread. The worker owns cleanup.
+                }
+            } catch (_: InterruptedException) {
+                // Normal cancellation after success or disconnect.
+            }
+        }, "whitevpn-l2tp-watchdog").apply { isDaemon = true; start() }
+    }
+
     private fun disconnect() {
         userStopped = true
-        L2tpRuntime.update(L2tpConnectionPhase.DISCONNECTING, activeId, "Отключение")
+        // Cancel even during IKE negotiation, before the tunnel object exists.
+        sessionToken.incrementAndGet()
+        watchdog?.interrupt()
+        L2tpRuntime.update(L2tpConnectionPhase.DISCONNECTING, activeId, "Останавливаем L2TP")
         tunnel?.stop()
+        socketFactory?.closeAll()
+        worker?.interrupt()
         if (!running.get()) {
             L2tpRuntime.update(L2tpConnectionPhase.IDLE, null, "Отключено")
             stopSelf()
@@ -219,5 +257,6 @@ class L2tpTunnelService : VpnService() {
         const val EXTRA_PROFILE_ID = "l2tp_profile_id"
         private const val CHANNEL_ID = "whitevpn_l2tp_tunnel"
         private const val NOTIFICATION_ID = 601
+        private const val CONNECTION_TIMEOUT_MS = 55_000L
     }
 }

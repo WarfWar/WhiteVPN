@@ -213,3 +213,27 @@ Some Android builds may manage foreground permissions differently;
 the service and the VPN permission UI require testing on the user's device.
 
 Native L2TP and an active WireGuard/IKEv2 VPN should not be run together.
+
+
+## WhiteVPN 0.8.0 — protocol tabs and L2TP responsiveness
+
+- Main screen separates WireGuard, L2TP, IKEv2 and OpenVPN into tabs. The WireGuard
+  connect button no longer appears in the L2TP tab; L2TP has its own primary
+  connect/cancel button for the selected saved server.
+- The L2TP tab has three separate sources: My profiles, IPSpeed, VPN Gate.
+  Public source lists are not conflated with local saved profiles.
+- Saved L2TP profiles are sorted by **device-side** ICMP latency ascending,
+  followed by pending/not-yet-tested profiles, followed by profiles that
+  did not answer ICMP. A user can explicitly select a different saved profile.
+- IPSpeed and VPN Gate rows are sorted similarly using up to 48 bounded
+  best-effort device-side ICMP probes per selected source; the full server
+  catalogue remains visible even when a probe is skipped or fails. Provider
+  ping is labelled separately; neither value verifies L2TP/IPsec availability.
+- Cancel is available while IKE/IPsec/L2TP negotiation is in progress.
+  A foreground-service watchdog ends a connection attempt after ~55 seconds
+  if the protocol stack has not reported connection establishment; the
+  Android TUN socket is closed and the worker is interrupted. The screen
+  reports timeout rather than remaining indefinitely at "Connecting".
+- The user should still verify end-to-end VPN traffic, routing, DNS and
+  disconnect on a real device. The experimental upstream crypto code lacks
+  an independent human security audit. Avoid sensitive traffic or public PSKs.

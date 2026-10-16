@@ -561,6 +561,29 @@ private fun WhiteVpnScreen(
             )
         }
 
+        Spacer(Modifier.height(20.dp))
+        listOf(listOf("WireGuard", "L2TP"), listOf("IKEv2", "OpenVPN")).forEach { line ->
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                line.forEach { protocol ->
+                    OutlinedButton(
+                        onClick = { activeProtocol = protocol },
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            containerColor = if (activeProtocol == protocol) Color(0xFF477CA3)
+                                else Color(0xFF22334D),
+                            contentColor = Color(0xFFF5F8FF)
+                        )
+                    ) {
+                        Text(protocol, fontWeight = if (activeProtocol == protocol)
+                            FontWeight.Bold else FontWeight.Normal)
+                    }
+                }
+            }
+        }
+        if (activeProtocol == "WireGuard") {
         Spacer(Modifier.height(32.dp))
         Box(
             modifier = Modifier
@@ -752,9 +775,11 @@ private fun WhiteVpnScreen(
             }
         }
 
+        }
+        if (activeProtocol == "OpenVPN") {
         Spacer(Modifier.height(24.dp))
         Text(
-            "Другие протоколы",
+            "OpenVPN",
             modifier = Modifier.fillMaxWidth(),
             fontSize = 21.sp,
             color = Color(0xFFF5F8FF),
@@ -782,6 +807,8 @@ private fun WhiteVpnScreen(
                 }
             }
         }
+        }
+        if (activeProtocol == "L2TP") {
         Spacer(Modifier.height(10.dp))
         Card(
             modifier = Modifier.fillMaxWidth(),
@@ -792,7 +819,42 @@ private fun WhiteVpnScreen(
             shape = RoundedCornerShape(18.dp)
         ) {
             Column(Modifier.padding(18.dp)) {
-                Text("L2TP/IPsec PSK • Мои серверы", fontWeight = FontWeight.Bold)
+                Text("L2TP/IPsec PSK", fontWeight = FontWeight.Bold)
+                val rankedL2tp = L2tpPingRanking.sortProfiles(l2tpEntries, l2tpPing)
+                val selectedL2tp = l2tpEntries.firstOrNull { it.id == l2tpState.profileId }
+                    ?: l2tpEntries.firstOrNull { it.id == selectedL2tpId }
+                    ?: rankedL2tp.firstOrNull()
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Выбран: " + (selectedL2tp?.name ?: "Добавьте сервер в «Мои»"),
+                    color = Color(0xFFC7D4E8), fontSize = 13.sp
+                )
+                val busyL2tp = l2tpState.phase == L2tpConnectionPhase.CONNECTING ||
+                    l2tpState.phase == L2tpConnectionPhase.CONNECTED ||
+                    l2tpState.phase == L2tpConnectionPhase.DISCONNECTING
+                Button(
+                    onClick = {
+                        if (busyL2tp) onDisconnectL2tp()
+                        else selectedL2tp?.let { onConnectL2tp(it.id) }
+                    },
+                    enabled = if (busyL2tp) l2tpState.phase != L2tpConnectionPhase.DISCONNECTING
+                        else selectedL2tp != null &&
+                            state.status == VpnStatus.DISCONNECTED &&
+                            ikeStatus != Ikev2Status.CONNECTED &&
+                            ikeStatus != Ikev2Status.CONNECTING,
+                    modifier = Modifier.fillMaxWidth().height(56.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (busyL2tp) Color(0xFFEBB4B4)
+                            else Color.White,
+                        contentColor = Color(0xFF121C2B)
+                    )
+                ) {
+                    Text(
+                        if (busyL2tp) "Отключить L2TP / отменить"
+                        else "Подключить L2TP",
+                        fontWeight = FontWeight.Bold
+                    )
+                }
                 Text(
                     "Встроенный L2TP: экспериментальный IKEv1/IPsec-движок " +
                         "без независимого криптоаудита. " +
@@ -839,6 +901,23 @@ private fun WhiteVpnScreen(
                         Text("L2TP-клиент ↗")
                     }
                 }
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    listOf("Мои", "IPSpeed", "VPN Gate").forEach { source ->
+                        OutlinedButton(
+                            onClick = { l2tpSource = source },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                containerColor = if (l2tpSource == source)
+                                    Color(0xFF477CA3) else Color(0xFF30415B),
+                                contentColor = Color(0xFFF5F8FF)
+                            )
+                        ) { Text(source, fontSize = 12.sp) }
+                    }
+                }
+                if (l2tpSource == "Мои") {
                 if (l2tpEntries.isNotEmpty()) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -855,7 +934,7 @@ private fun WhiteVpnScreen(
                         }
                     }
                 }
-                l2tpEntries.forEach { profile ->
+                L2tpPingRanking.sortProfiles(l2tpEntries, l2tpPing).forEach { profile ->
                     Card(
                         modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp),
                         shape = RoundedCornerShape(15.dp),
@@ -888,7 +967,7 @@ private fun WhiteVpnScreen(
                                 l2tpState.phase == L2tpConnectionPhase.CONNECTING)) {
                                 OutlinedButton(
                                     onClick = onDisconnectL2tp,
-                                    enabled = !busy,
+                                    enabled = l2tpState.phase != L2tpConnectionPhase.DISCONNECTING,
                                     modifier = Modifier.fillMaxWidth()
                                 ) { Text("Отключить L2TP") }
                             } else {
@@ -901,6 +980,10 @@ private fun WhiteVpnScreen(
                                         ikeStatus != Ikev2Status.CONNECTED &&
                                         ikeStatus != Ikev2Status.CONNECTING
                                 ) { Text("Подключить L2TP (эксперимент)") }
+                            }
+                            TextButton(onClick = { selectedL2tpId = profile.id }) {
+                                Text(if (selectedL2tp?.id == profile.id)
+                                    "✓ Выбран" else "Выбрать сервер")
                             }
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 TextButton(onClick = { l2tpDetailId = profile.id }) {
@@ -931,6 +1014,8 @@ private fun WhiteVpnScreen(
                     )
                 }
 
+                }
+                if (l2tpSource == "IPSpeed") {
                 Spacer(Modifier.height(18.dp))
                 Text(
                     "IPSpeed • бесплатные L2TP/IPsec",
@@ -1004,7 +1089,10 @@ private fun WhiteVpnScreen(
                     }
                     ipSpeedServers.filter {
                         ipSpeedCountry == "Все" || it.country == ipSpeedCountry
-                    }.forEach { server ->
+                    }.sortedWith(compareBy<IpSpeedL2tpServer> {
+                        L2tpPingRanking.group(it.ip, catalogPing)
+                    }.thenBy { catalogPing[it.ip] ?: Double.MAX_VALUE }
+                        .thenBy { it.ip }).forEach { server ->
                         val imported = l2tpEntries.any { it.host == server.ip }
                         Card(
                             modifier = Modifier.fillMaxWidth().padding(bottom = 7.dp),
@@ -1022,6 +1110,14 @@ private fun WhiteVpnScreen(
                                 )
                                 Text(server.ip, color = Color(0xFFC7D4E8), fontSize = 13.sp)
                                 Text(
+                                    if (catalogPing.containsKey(server.ip))
+                                        ServerPing.label(catalogPing[server.ip])
+                                    else "Проверка пинга...",
+                                    color = if (catalogPing[server.ip] != null)
+                                        Color(0xFF8CF1C7) else Color(0xFFF0CE96),
+                                    fontSize = 12.sp
+                                )
+                                Text(
                                     "Uptime (сайт): " + server.uptime +
                                         " • Пинг (сайт): " + server.publishedPing,
                                     color = Color(0xFFC7D4E8), fontSize = 11.sp
@@ -1036,9 +1132,11 @@ private fun WhiteVpnScreen(
                         }
                     }
                 }
+                }
             }
         }
 
+        if (l2tpSource == "VPN Gate") {
                 Spacer(Modifier.height(18.dp))
                 Text(
                     "VPN Gate • бесплатные L2TP/IPsec",
@@ -1093,7 +1191,10 @@ private fun WhiteVpnScreen(
                     }
                     val shown = vpnGateServers.filter {
                         vpnGateCountry == "Все" || it.country == vpnGateCountry
-                    }
+                    }.sortedWith(compareBy<VpnGateL2tpServer> {
+                        L2tpPingRanking.group(it.host, catalogPing)
+                    }.thenBy { catalogPing[it.host] ?: Double.MAX_VALUE }
+                        .thenBy { it.host })
                     shown.take(vpnGateDisplayLimit).forEach { server ->
                         val saved = l2tpEntries.any { it.host == server.host }
                         Card(
@@ -1109,6 +1210,14 @@ private fun WhiteVpnScreen(
                                     fontWeight = FontWeight.SemiBold)
                                 Text(server.host + " • " + server.uptime,
                                     color = Color(0xFFC7D4E8), fontSize = 13.sp)
+                                Text(
+                                    if (catalogPing.containsKey(server.host))
+                                        ServerPing.label(catalogPing[server.host])
+                                    else "Проверка пинга...",
+                                    color = if (catalogPing[server.host] != null)
+                                        Color(0xFF8CF1C7) else Color(0xFFF0CE96),
+                                    fontSize = 12.sp
+                                )
                                 Text("Пинг VPN Gate: " + server.sitePing,
                                     color = Color(0xFFC7D4E8), fontSize = 12.sp)
                                 TextButton(
@@ -1130,6 +1239,9 @@ private fun WhiteVpnScreen(
                         color = Color(0xFFC7D4E8), fontSize = 12.sp
                     )
                 }
+        }
+        }
+        if (activeProtocol == "IKEv2") {
         Spacer(Modifier.height(12.dp))
         Card(
             modifier = Modifier.fillMaxWidth(),
@@ -1168,6 +1280,8 @@ private fun WhiteVpnScreen(
             }
         }
 
+        }
+        if (activeProtocol == "WireGuard") {
         Spacer(Modifier.height(24.dp))
         Text(
             "Бесплатные серверы",
@@ -1250,6 +1364,7 @@ private fun WhiteVpnScreen(
             color = Color(0xFFB7C6DA),
             textAlign = TextAlign.Center
         )
+        }
     }
 
     if (showL2tpForm) {
