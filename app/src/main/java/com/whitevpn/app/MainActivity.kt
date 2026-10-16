@@ -470,10 +470,11 @@ private fun WhiteVpnScreen(
             ipSpeedServers = latest
             ipSpeedLive = true
             ipSpeedMessage = "Данные загружены с IPSpeed • " + latest.size + " серверов"
-        } catch (_: Exception) {
+        } catch (error: Exception) {
             ipSpeedLive = false
-            ipSpeedMessage = "Не удалось обновить сайт. Показывается встроенный список от " +
-                IpSpeedL2tpCatalog.snapshotUpdated
+            val detail = error.message?.take(110) ?: error.javaClass.simpleName
+            ipSpeedMessage = "Не удалось обновить IPSpeed (" + detail + "). " +
+                "Список от " + IpSpeedL2tpCatalog.snapshotUpdated
             if (ipSpeedServers.isEmpty()) ipSpeedServers = IpSpeedL2tpCatalog.snapshot
         } finally {
             ipSpeedLoading = false

@@ -268,3 +268,32 @@ the L2TP tab for each attempt:
 Sources:
 - SoftEther server specifications: https://www.softether.org/spec
 - Upstream core implementation: https://github.com/Flo354/L2TP-IPSec-VPN-for-Android
+
+
+## WhiteVPN 0.10.0 — Diagnose IKE Phase 1 (public L2TP relays)
+
+- Shows UDP sent/received **packet counts by port** (500 and 4500) on the
+  L2TP tab, using a wrapper around the protected VPN UDP socket.
+  Does NOT inspect, log, upload or store datagram payloads or VPN credentials.
+- If the client sent IKE but received **zero responses from the selected
+  server IP**, the screen makes this explicit. ICMP ping is not evidence
+  of UDP/500 or UDP/4500 availability. Check server availability, UDP
+  filtering, carrier/Wi-Fi restrictions, and network connectivity.
+- If UDP answers exist but IKE does not advance, focus on crypto proposal
+  compatibility or the experimental protocol implementation. It is not
+  a guarantee that a valid IKE handshake occurred.
+- Both the built-in 45-second protocol timeout and WhiteVPN's 55-second
+  watchdog remain in place and expose useful per-port counters after failure.
+- IPSpeed directory's bundled snapshot was updated from the official
+  published page on 2026-10-16 (17:00 UTC): 3 Croatia + 16 Japan. The
+  new URL fetch supports up to two same-site HTTPS redirects, tries
+  English and Russian pages, and surfaces status/failure reason instead of
+  a generic refresh error. Source pages change rapidly; neither snapshots
+  nor ICMP ping prove actual VPN connectivity.
+- The SoftEther SHA-1/DH2 compatibility mode remains explicitly opt-in.
+  Public L2TP IPsec PSKs and a third-party unaudited IKE stack cannot be
+  considered a trustworthy VPN for sensitive traffic.
+
+This build has only compile and unit-test verification. True connection
+success and leak-free routing can only be validated against a known-good
+L2TP server on an actual Android phone.

@@ -20,7 +20,7 @@ data class IpSpeedL2tpServer(
 
 object IpSpeedL2tpCatalog {
     const val pageUrl = "https://ipspeed.info/free-l2tpipsec.php"
-    const val snapshotUpdated = "15.10.2026 19:00 UTC"
+    const val snapshotUpdated = "16.10.2026 17:00 UTC"
     const val publicUsername = "vpn"
     const val publicPassword = "vpn"
     const val publicPsk = "vpn"
@@ -42,8 +42,9 @@ object IpSpeedL2tpCatalog {
 
     // Snapshot as published on IPSpeed (not live verified).
     val snapshot: List<IpSpeedL2tpServer> = listOf(
-        entry("Croatia", "150.40.105.16", "15 days", "1 ms"),
-        entry("Croatia", "150.40.105.10", "15 days", "1 ms"),
+        entry("Croatia", "150.40.105.16", "16 days", "1 ms"),
+        entry("Croatia", "150.40.105.7", "16 days", "1 ms"),
+        entry("Croatia", "150.40.105.21", "36 days", "1 ms"),
         entry("Japan", "219.100.37.176", "12 days", "8 ms"),
         entry("Japan", "219.100.37.163", "12 days", "18 ms"),
         entry("Japan", "219.100.37.31", "12 days", "18 ms"),
@@ -59,8 +60,7 @@ object IpSpeedL2tpCatalog {
         entry("Japan", "219.100.37.125", "12 days", "13 ms"),
         entry("Japan", "219.100.37.13", "12 days", "15 ms"),
         entry("Japan", "219.100.37.119", "12 days", "18 ms"),
-        entry("Japan", "160.251.62.107", "9 days", "1 ms"),
-        entry("USA", "172.167.211.107", "1 day", "1 ms")
+        entry("Japan", "128.27.29.161", "20 hours", "7 ms")
     )
 
     private fun validIp(host: String): Boolean {
@@ -95,33 +95,68 @@ object IpSpeedL2tpCatalog {
         preSharedKey = publicPsk
     )
 
-    /** HTTPS only, off main thread, bounded response; no arbitrary redirect host. */
-    fun fetch(): List<IpSpeedL2tpServer> {
-        val connection = URL(pageUrl).openConnection() as HttpURLConnection
-        connection.connectTimeout = 6000
-        connection.readTimeout = 6000
-        connection.instanceFollowRedirects = false
-        connection.setRequestProperty("Accept", "text/html")
-        connection.setRequestProperty("User-Agent", "WhiteVPN/0.6 (Android)")
-        try {
-            connection.connect()
-            require(connection.responseCode == 200) { "Website returned an error" }
-            val content = connection.inputStream.use { stream ->
-                val output = java.io.ByteArrayOutputStream()
-                val block = ByteArray(4096)
-                var total = 0
-                while (true) {
-                    val n = stream.read(block)
-                    if (n < 0) break
-                    total += n
-                    require(total <= 1024 * 1024) { "Page too large" }
-                    output.write(block, 0, n)
-                }
-                String(output.toByteArray(), Charsets.UTF_8)
+    /**
+     * A same-site HTTPS redirect is allowed (e.g. localized content), but we
+     * never follow a redirect to a third party or to an insecure URL.
+     * Every response is capped at 1 MiB.
+     */
+    private fun download(url: String): String {
+        var current = URL(url)
+        repeat(3) {
+            require(current.protocol == "https" &&
+                current.host in setOf("ipspeed.info", "www.ipspeed.info") &&
+                current.path.endsWith("/free-l2tpipsec.php")) {
+                "IPSpeed перенаправил на неизвестный адрес"
             }
-            return parse(content).also { require(it.isNotEmpty()) { "No server rows found" } }
-        } finally {
-            connection.disconnect()
+            val conn = current.openConnection() as HttpURLConnection
+            conn.connectTimeout = 7500
+            conn.readTimeout = 7500
+            conn.instanceFollowRedirects = false
+            conn.setRequestProperty("Accept", "text/html")
+            conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 16) WhiteVPN/1.0")
+            try {
+                val status = conn.responseCode
+                if (status in 300..399) {
+                    val location = conn.getHeaderField("Location")
+                        ?: error("HTTP $status без адреса перехода")
+                    current = URL(current, location)
+                    return@repeat
+                }
+                require(status == 200) { "IPSpeed: HTTP $status" }
+                val output = java.io.ByteArrayOutputStream()
+                conn.inputStream.use { stream ->
+                    val block = ByteArray(4096)
+                    var count = 0
+                    while (true) {
+                        val size = stream.read(block)
+                        if (size < 0) break
+                        count += size
+                        require(count <= 1024 * 1024) { "Страница IPSpeed слишком большая" }
+                        output.write(block, 0, size)
+                    }
+                }
+                return String(output.toByteArray(), Charsets.UTF_8)
+            } finally {
+                conn.disconnect()
+            }
         }
+        throw java.io.IOException("IPSpeed: слишком много перенаправлений")
+    }
+
+    /** Try English and Russian versions; never fabricate live data on error. */
+    fun fetch(): List<IpSpeedL2tpServer> {
+        var lastFailure: Exception? = null
+        for (address in listOf(pageUrl, "https://ipspeed.info/ru/free-l2tpipsec.php")) {
+            try {
+                val latest = parse(download(address))
+                require(latest.isNotEmpty()) { "IPSpeed: список серверов не распознан" }
+                return latest
+            } catch (e: Exception) {
+                lastFailure = e
+            }
+        }
+        throw java.io.IOException(
+            "IPSpeed: " + (lastFailure?.message ?: "сетевая ошибка"), lastFailure
+        )
     }
 }

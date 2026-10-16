@@ -107,8 +107,7 @@ class L2tpTunnelService : VpnService() {
         userStopped = false
         val token = sessionToken.incrementAndGet()
         startWatchdog(token, profileId)
-        L2tpRuntime.update(
-            L2tpConnectionPhase.CONNECTING, profileId,
+        L2tpRuntime.begin(profileId,
             if (cryptoMode == L2tpCryptoMode.SOFTETHER_LEGACY)
                 "IKEv1: режим SoftEther (AES-128/SHA-1/DH2, сниженная защита)"
             else "IKEv1: стандартный защищённый режим (AES-256/SHA-256/DH14)"
@@ -129,6 +128,9 @@ class L2tpTunnelService : VpnService() {
                 val target = InetAddress.getByName(profile.host)
                 val factory = AndroidUdpSocketFactory(this, target)
                 socketFactory = factory
+                val trackedUdp = L2tpPacketDiagnostics(factory, target) { outbound, port ->
+                    L2tpRuntime.recordPacket(profileId, outbound, port)
+                }
 
                 val listener = object : TunnelListener {
                     override fun onStateChanged(state: TunnelState, detail: String?) {
@@ -177,15 +179,16 @@ class L2tpTunnelService : VpnService() {
                             L2tpConnectionPhase.FAILED, profileId,
                             when (kind) {
                                 TunnelErrorKind.IKE_NO_RESPONSE ->
-                                    "IKE: сервер не ответил. Возможны блокировка UDP/500/4500 или неподдерживаемая криптография."
+                                    "IKE: время ожидания истекло. " +
+                                        L2tpRuntime.state.value.packetCounts.diagnosis()
                                 TunnelErrorKind.IKE_PROPOSAL_REJECTED ->
                                     "IKE: сервер отверг параметры шифрования. Для SoftEther попробуйте режим совместимости."
                                 TunnelErrorKind.IKE_AUTH_FAILED ->
                                     "IKE: ошибка проверки IPsec PSK."
                                 TunnelErrorKind.PPP_AUTH_FAILED ->
                                     "PPP: сервер не принял логин или пароль."
-                                else -> "L2TP: ошибка " + kind.name + ". " +
-                                    message.take(150).replace(Regex("[\\r\\n]+"), " ")
+                                else -> "L2TP: ошибка " + kind.name +
+                                    ". " + L2tpRuntime.state.value.packetCounts.diagnosis()
                             }
                         )
                     }
@@ -200,7 +203,7 @@ class L2tpTunnelService : VpnService() {
 
                 val instance = L2tpIpsecTunnel(
                     config = config,
-                    socketFactory = factory,
+                    socketFactory = trackedUdp,
                     tunProvider = AndroidTunProvider(this, { desc -> tunDescriptor = desc },
                         "WhiteVPN L2TP"),
                     listener = listener
@@ -244,8 +247,8 @@ class L2tpTunnelService : VpnService() {
                     val phase = L2tpRuntime.state.value.message
                     L2tpRuntime.update(
                         L2tpConnectionPhase.FAILED, profileId,
-                        "Таймаут 55 секунд на этапе «" + phase.take(70) +
-                            "». Проверьте UDP 500/4500 и профиль шифрования."
+                        "Таймаут 55 секунд на этапе «" + phase.take(65) +
+                            "». " + L2tpRuntime.state.value.packetCounts.diagnosis()
                     )
                     tunnel?.stop()
                     socketFactory?.closeAll()

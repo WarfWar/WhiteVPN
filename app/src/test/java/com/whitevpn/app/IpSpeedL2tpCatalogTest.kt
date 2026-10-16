@@ -8,9 +8,9 @@ class IpSpeedL2tpCatalogTest {
     @Test fun bundledServers() {
         assertEquals(19, IpSpeedL2tpCatalog.snapshot.size)
         assertEquals(19, IpSpeedL2tpCatalog.snapshot.map { it.ip }.distinct().size)
-        assertEquals(2, IpSpeedL2tpCatalog.snapshot.count { it.country == "Хорватия" })
+        assertEquals(3, IpSpeedL2tpCatalog.snapshot.count { it.country == "Хорватия" })
         assertEquals(16, IpSpeedL2tpCatalog.snapshot.count { it.country == "Япония" })
-        assertEquals(1, IpSpeedL2tpCatalog.snapshot.count { it.country == "США" })
+        assertEquals(0, IpSpeedL2tpCatalog.snapshot.count { it.country == "США" })
     }
 
     @Test fun safelyParseLiveTableRows() {
