@@ -53,7 +53,13 @@ class L2tpTunnelService : VpnService() {
                     stopSelf(startId)
                 } else {
                     startForegroundNotification()
-                    connect(id)
+                    val mode = if (intent.getStringExtra(EXTRA_CRYPTO_MODE) ==
+                        L2tpCryptoMode.SOFTETHER_LEGACY.name) {
+                        L2tpCryptoMode.SOFTETHER_LEGACY
+                    } else {
+                        L2tpCryptoMode.STRONG
+                    }
+                    connect(id, mode)
                 }
             }
             else -> stopSelf(startId)
@@ -95,13 +101,18 @@ class L2tpTunnelService : VpnService() {
         }
     }
 
-    private fun connect(profileId: String) {
+    private fun connect(profileId: String, cryptoMode: L2tpCryptoMode) {
         if (!running.compareAndSet(false, true)) return
         activeId = profileId
         userStopped = false
         val token = sessionToken.incrementAndGet()
         startWatchdog(token, profileId)
-        L2tpRuntime.update(L2tpConnectionPhase.CONNECTING, profileId, "Открываем IKEv1/IPsec")
+        L2tpRuntime.update(
+            L2tpConnectionPhase.CONNECTING, profileId,
+            if (cryptoMode == L2tpCryptoMode.SOFTETHER_LEGACY)
+                "IKEv1: режим SoftEther (AES-128/SHA-1/DH2, сниженная защита)"
+            else "IKEv1: стандартный защищённый режим (AES-256/SHA-256/DH14)"
+        )
 
         worker = Thread({
             try {
@@ -112,14 +123,9 @@ class L2tpTunnelService : VpnService() {
                     throw IllegalStateException("Параметры L2TP некорректны")
                 }
 
-                // Default strong proposal. Older VPN Gate servers may reject it;
-                // we do not silently downgrade cryptography to MD5/DH2.
-                val config = VpnConfig(
-                    serverHost = profile.host,
-                    username = profile.username,
-                    password = profile.password,
-                    presharedKey = profile.preSharedKey
-                )
+                // Legacy algorithms are explicitly opt-in in the user interface.
+                // Never silently downgrade on a failed IKE exchange.
+                val config = L2tpCryptoProfiles.create(profile, cryptoMode)
                 val target = InetAddress.getByName(profile.host)
                 val factory = AndroidUdpSocketFactory(this, target)
                 socketFactory = factory
@@ -132,10 +138,27 @@ class L2tpTunnelService : VpnService() {
                             TunnelState.DISCONNECTING -> L2tpRuntime.update(
                                 L2tpConnectionPhase.DISCONNECTING, profileId, "Отключение L2TP"
                             )
-                            else -> L2tpRuntime.update(
-                                L2tpConnectionPhase.CONNECTING, profileId,
-                                "Этап: " + state.name
-                            )
+                            else -> {
+                                if (!userStopped && L2tpRuntime.state.value.phase !=
+                                    L2tpConnectionPhase.FAILED) {
+                                    val phase = when (state) {
+                                        TunnelState.IKE_PHASE1 ->
+                                            "IKE Phase 1: ответ UDP/500 и согласование алгоритмов"
+                                        TunnelState.IKE_PHASE2 ->
+                                            "IKE Phase 2: ключи IPsec и UDP/4500"
+                                        TunnelState.L2TP_TUNNEL ->
+                                            "L2TP: создание туннеля"
+                                        TunnelState.L2TP_SESSION ->
+                                            "L2TP: создание сессии"
+                                        TunnelState.PPP_NEGOTIATION ->
+                                            "PPP: проверка логина и пароля"
+                                        else -> "Этап: " + state.name
+                                    }
+                                    L2tpRuntime.update(
+                                        L2tpConnectionPhase.CONNECTING, profileId, phase
+                                    )
+                                }
+                            }
                         }
                     }
 
@@ -152,8 +175,18 @@ class L2tpTunnelService : VpnService() {
                     ) {
                         if (!userStopped) L2tpRuntime.update(
                             L2tpConnectionPhase.FAILED, profileId,
-                            "Ошибка L2TP: " + kind.name +
-                                ". Проверьте PSK, PPP, IKE-параметры и доступность сервера."
+                            when (kind) {
+                                TunnelErrorKind.IKE_NO_RESPONSE ->
+                                    "IKE: сервер не ответил. Возможны блокировка UDP/500/4500 или неподдерживаемая криптография."
+                                TunnelErrorKind.IKE_PROPOSAL_REJECTED ->
+                                    "IKE: сервер отверг параметры шифрования. Для SoftEther попробуйте режим совместимости."
+                                TunnelErrorKind.IKE_AUTH_FAILED ->
+                                    "IKE: ошибка проверки IPsec PSK."
+                                TunnelErrorKind.PPP_AUTH_FAILED ->
+                                    "PPP: сервер не принял логин или пароль."
+                                else -> "L2TP: ошибка " + kind.name + ". " +
+                                    message.take(150).replace(Regex("[\\r\\n]+"), " ")
+                            }
                         )
                     }
 
@@ -208,10 +241,11 @@ class L2tpTunnelService : VpnService() {
                 Thread.sleep(CONNECTION_TIMEOUT_MS)
                 if (token == sessionToken.get() && running.get() &&
                     L2tpRuntime.state.value.phase == L2tpConnectionPhase.CONNECTING) {
+                    val phase = L2tpRuntime.state.value.message
                     L2tpRuntime.update(
                         L2tpConnectionPhase.FAILED, profileId,
-                        "Таймаут 55 секунд: сервер не завершил IKE/L2TP/PPP. " +
-                            "Проверьте UDP 500/4500 и совместимость IPsec."
+                        "Таймаут 55 секунд на этапе «" + phase.take(70) +
+                            "». Проверьте UDP 500/4500 и профиль шифрования."
                     )
                     tunnel?.stop()
                     socketFactory?.closeAll()
@@ -255,6 +289,7 @@ class L2tpTunnelService : VpnService() {
         const val ACTION_CONNECT = "com.whitevpn.app.L2TP_CONNECT"
         const val ACTION_DISCONNECT = "com.whitevpn.app.L2TP_DISCONNECT"
         const val EXTRA_PROFILE_ID = "l2tp_profile_id"
+        const val EXTRA_CRYPTO_MODE = "l2tp_crypto_mode"
         private const val CHANNEL_ID = "whitevpn_l2tp_tunnel"
         private const val NOTIFICATION_ID = 601
         private const val CONNECTION_TIMEOUT_MS = 55_000L

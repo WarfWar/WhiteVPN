@@ -237,3 +237,34 @@ Native L2TP and an active WireGuard/IKEv2 VPN should not be run together.
 - The user should still verify end-to-end VPN traffic, routing, DNS and
   disconnect on a real device. The experimental upstream crypto code lacks
   an independent human security audit. Avoid sensitive traffic or public PSKs.
+
+
+## WhiteVPN 0.9.0 — Explicit SoftEther phase-1 compatibility
+
+**Root cause for many stalls at IKE_PHASE1:** the upstream engine's strong IKEv1
+default is AES-256/SHA-256/MODP-2048 (DH14). Official SoftEther L2TP/IPsec
+server specifications describe SHA-1 and DH groups 1/2/5. The strong proposals
+often cannot be negotiated with volunteer VPN Gate peers.
+
+A new **explicit, opt-in** "SoftEther compatibility" control is available on
+the L2TP tab for each attempt:
+
+- Default remains **AES-256/SHA-256/DH14**, ESP AES-256/HMAC-SHA-256.
+- Compatibility sets **AES-128/SHA-1/DH2 (MODP 1024)** for IKE phase 1 and
+  **ESP AES-128/HMAC-SHA-1** for phase 2. These algorithms are weak and should
+  only be used for legacy interoperability, never confidential traffic.
+- Configuration choice is sent to the local VPN service as a non-secret enum.
+  Actual PSK and password remain encrypted in Android Keystore and are loaded
+  inside the service as before. The service never falls back to weaker
+  cryptography without user opt-in.
+- More actionable L2TP status messages distinguish IKE no reply, proposal
+  rejected, authentication failed and PPP password rejected. After 55 seconds,
+  the watchdog reports which stage stalled and stops the attempt.
+- **Successful IKE or ICMP does not prove full VPN security**. A VPN Gate
+  server using a publicly shared PSK cannot provide trustworthy server identity.
+  This is an experimental, unaudited implementation. Verify on a physical
+  Android phone; public servers can disappear or block UDP 500/4500.
+
+Sources:
+- SoftEther server specifications: https://www.softether.org/spec
+- Upstream core implementation: https://github.com/Flo354/L2TP-IPSec-VPN-for-Android

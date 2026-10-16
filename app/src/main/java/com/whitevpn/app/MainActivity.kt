@@ -74,19 +74,22 @@ class MainActivity : ComponentActivity() {
     private val l2tpStore get() = (application as WhiteVpnApp).l2tpProfiles
 
     private var pendingL2tpId: String? = null
+    private var pendingL2tpMode: L2tpCryptoMode = L2tpCryptoMode.STRONG
     private val l2tpPermission = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
         val id = pendingL2tpId
+        val mode = pendingL2tpMode
         pendingL2tpId = null
+        pendingL2tpMode = L2tpCryptoMode.STRONG
         if (result.resultCode == Activity.RESULT_OK && id != null) {
-            launchL2tp(id)
+            launchL2tp(id, mode)
         } else {
             controller.showMessage("Android не предоставил разрешение на L2TP/IPsec")
         }
     }
 
-    private fun requestL2tp(profileId: String) {
+    private fun requestL2tp(profileId: String, mode: L2tpCryptoMode) {
         if (controller.state.value.status != VpnStatus.DISCONNECTED ||
             nativeIkev2.status() == Ikev2Status.CONNECTED ||
             nativeIkev2.status() == Ikev2Status.CONNECTING) {
@@ -101,9 +104,10 @@ class MainActivity : ComponentActivity() {
         }
         try {
             val permission = VpnService.prepare(this)
-            if (permission == null) launchL2tp(profileId)
+            if (permission == null) launchL2tp(profileId, mode)
             else {
                 pendingL2tpId = profileId
+                pendingL2tpMode = mode
                 l2tpPermission.launch(permission)
             }
         } catch (_: Exception) {
@@ -111,11 +115,12 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun launchL2tp(profileId: String) {
+    private fun launchL2tp(profileId: String, mode: L2tpCryptoMode) {
         try {
             val request = Intent(this, L2tpTunnelService::class.java)
                 .setAction(L2tpTunnelService.ACTION_CONNECT)
                 .putExtra(L2tpTunnelService.EXTRA_PROFILE_ID, profileId)
+                .putExtra(L2tpTunnelService.EXTRA_CRYPTO_MODE, mode.name)
             startForegroundService(request)
         } catch (_: Exception) {
             controller.showMessage("Не удалось запустить L2TP VPN-сервис")
@@ -380,7 +385,7 @@ private fun WhiteVpnScreen(
     ikeStatus: Ikev2Status,
     l2tpEntries: List<L2tpProfile>,
     l2tpState: L2tpConnectionState,
-    onConnectL2tp: (String) -> Unit,
+    onConnectL2tp: (String, L2tpCryptoMode) -> Unit,
     onDisconnectL2tp: () -> Unit,
     onSaveL2tp: (L2tpProfile) -> Boolean,
     onDeleteL2tp: (String) -> Unit,
@@ -405,6 +410,7 @@ private fun WhiteVpnScreen(
     var showIkev2Form by remember { mutableStateOf(false) }
     var activeProtocol by remember { mutableStateOf("WireGuard") }
     var l2tpSource by remember { mutableStateOf("Мои") }
+    var softetherCompat by remember { mutableStateOf(false) }
     var selectedL2tpId by remember { mutableStateOf<String?>(null) }
     var catalogPingRefresh by remember { mutableIntStateOf(0) }
     val catalogPing = remember { mutableStateMapOf<String, Double?>() }
@@ -856,13 +862,42 @@ private fun WhiteVpnScreen(
                     "Выбран: " + (selectedL2tp?.name ?: "Добавьте сервер в «Мои»"),
                     color = Color(0xFFC7D4E8), fontSize = 13.sp
                 )
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = { softetherCompat = !softetherCompat },
+                    enabled = l2tpState.phase != L2tpConnectionPhase.CONNECTING &&
+                        l2tpState.phase != L2tpConnectionPhase.CONNECTED &&
+                        l2tpState.phase != L2tpConnectionPhase.DISCONNECTING,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        if (softetherCompat) "✓ Совместимость SoftEther: ВКЛ"
+                        else "Совместимость SoftEther: ВЫКЛ",
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+                Text(
+                    if (softetherCompat)
+                        "ВНИМАНИЕ: AES-128/SHA-1/DH2 (1024 бит) — устаревшая криптография. " +
+                            "Включайте только для проверки публичных SoftEther-серверов, " +
+                            "не используйте для чувствительных данных."
+                    else "Защищённый режим: AES-256/SHA-256/DH14. " +
+                        "Многие публичные SoftEther-серверы его не поддерживают. " +
+                        "Для них можно явно включить совместимость.",
+                    color = Color(0xFFF0CE96), fontSize = 12.sp,
+                    modifier = Modifier.padding(vertical = 5.dp)
+                )
                 val busyL2tp = l2tpState.phase == L2tpConnectionPhase.CONNECTING ||
                     l2tpState.phase == L2tpConnectionPhase.CONNECTED ||
                     l2tpState.phase == L2tpConnectionPhase.DISCONNECTING
                 Button(
                     onClick = {
                         if (busyL2tp) onDisconnectL2tp()
-                        else selectedL2tp?.let { onConnectL2tp(it.id) }
+                        else selectedL2tp?.let {
+                            onConnectL2tp(it.id, if (softetherCompat)
+                                L2tpCryptoMode.SOFTETHER_LEGACY
+                            else L2tpCryptoMode.STRONG)
+                        }
                     },
                     enabled = if (busyL2tp) l2tpState.phase != L2tpConnectionPhase.DISCONNECTING
                         else selectedL2tp != null &&
@@ -999,7 +1034,13 @@ private fun WhiteVpnScreen(
                                 ) { Text("Отключить L2TP") }
                             } else {
                                 OutlinedButton(
-                                    onClick = { onConnectL2tp(profile.id) },
+                                    onClick = {
+                                        onConnectL2tp(
+                                            profile.id,
+                                            if (softetherCompat) L2tpCryptoMode.SOFTETHER_LEGACY
+                                            else L2tpCryptoMode.STRONG
+                                        )
+                                    },
                                     modifier = Modifier.fillMaxWidth(),
                                     enabled = !busy &&
                                         l2tpState.phase != L2tpConnectionPhase.CONNECTED &&
