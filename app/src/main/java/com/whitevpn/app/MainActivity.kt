@@ -73,6 +73,64 @@ class MainActivity : ComponentActivity() {
     private val nativeIkev2 get() = (application as WhiteVpnApp).nativeIkev2
     private val l2tpStore get() = (application as WhiteVpnApp).l2tpProfiles
 
+    private var pendingL2tpId: String? = null
+    private val l2tpPermission = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val id = pendingL2tpId
+        pendingL2tpId = null
+        if (result.resultCode == Activity.RESULT_OK && id != null) {
+            launchL2tp(id)
+        } else {
+            controller.showMessage("Android не предоставил разрешение на L2TP/IPsec")
+        }
+    }
+
+    private fun requestL2tp(profileId: String) {
+        if (controller.state.value.status != VpnStatus.DISCONNECTED ||
+            nativeIkev2.status() == Ikev2Status.CONNECTED ||
+            nativeIkev2.status() == Ikev2Status.CONNECTING) {
+            controller.showMessage("Сначала отключите WireGuard или IKEv2")
+            return
+        }
+        val status = L2tpRuntime.state.value.phase
+        if (status == L2tpConnectionPhase.CONNECTED ||
+            status == L2tpConnectionPhase.CONNECTING) {
+            controller.showMessage("Отключите предыдущую L2TP-сессию")
+            return
+        }
+        try {
+            val permission = VpnService.prepare(this)
+            if (permission == null) launchL2tp(profileId)
+            else {
+                pendingL2tpId = profileId
+                l2tpPermission.launch(permission)
+            }
+        } catch (_: Exception) {
+            controller.showMessage("Не удалось запросить разрешение Android для L2TP")
+        }
+    }
+
+    private fun launchL2tp(profileId: String) {
+        try {
+            val request = Intent(this, L2tpTunnelService::class.java)
+                .setAction(L2tpTunnelService.ACTION_CONNECT)
+                .putExtra(L2tpTunnelService.EXTRA_PROFILE_ID, profileId)
+            startForegroundService(request)
+        } catch (_: Exception) {
+            controller.showMessage("Не удалось запустить L2TP VPN-сервис")
+        }
+    }
+
+    private fun stopL2tp() {
+        try {
+            startService(Intent(this, L2tpTunnelService::class.java)
+                .setAction(L2tpTunnelService.ACTION_DISCONNECT))
+        } catch (_: Exception) {
+            controller.showMessage("Не удалось остановить L2TP VPN")
+        }
+    }
+
     private val vpnPermission = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
@@ -133,8 +191,10 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startIkev2(server: String, identity: String, user: String, password: String) {
-        if (controller.state.value.status != VpnStatus.DISCONNECTED) {
-            controller.showMessage("Для подключения IKEv2 сначала отключите WireGuard")
+        if (controller.state.value.status != VpnStatus.DISCONNECTED ||
+            L2tpRuntime.state.value.phase == L2tpConnectionPhase.CONNECTED ||
+            L2tpRuntime.state.value.phase == L2tpConnectionPhase.CONNECTING) {
+            controller.showMessage("Сначала отключите WireGuard или L2TP")
             return
         }
         try {
@@ -161,6 +221,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         setContent {
             val current by controller.state.collectAsState()
+            val l2tpState by L2tpRuntime.state.collectAsState()
             var ikeStatus by remember { mutableStateOf(nativeIkev2.status()) }
             var l2tpEntries by remember {
                 mutableStateOf(try {
@@ -185,6 +246,9 @@ class MainActivity : ComponentActivity() {
                     state = current,
                     ikeStatus = ikeStatus,
                     l2tpEntries = l2tpEntries,
+                    l2tpState = l2tpState,
+                    onConnectL2tp = ::requestL2tp,
+                    onDisconnectL2tp = ::stopL2tp,
                     onSaveL2tp = { profile ->
                         try {
                             l2tpEntries = l2tpStore.upsert(profile)
@@ -221,7 +285,9 @@ class MainActivity : ComponentActivity() {
                             VpnStatus.CONNECTED -> controller.disconnect()
                             VpnStatus.DISCONNECTED -> {
                                 if (nativeIkev2.status() == Ikev2Status.CONNECTED ||
-                                    nativeIkev2.status() == Ikev2Status.CONNECTING) {
+                                    nativeIkev2.status() == Ikev2Status.CONNECTING ||
+                                    l2tpState.phase == L2tpConnectionPhase.CONNECTED ||
+                                    l2tpState.phase == L2tpConnectionPhase.CONNECTING) {
                                     controller.showMessage("Сначала отключите IKEv2/IPsec")
                                 } else {
                                     requestVpnPermission()
@@ -313,6 +379,9 @@ private fun WhiteVpnScreen(
     state: VpnUiState,
     ikeStatus: Ikev2Status,
     l2tpEntries: List<L2tpProfile>,
+    l2tpState: L2tpConnectionState,
+    onConnectL2tp: (String) -> Unit,
+    onDisconnectL2tp: () -> Unit,
     onSaveL2tp: (L2tpProfile) -> Boolean,
     onDeleteL2tp: (String) -> Unit,
     onCopyL2tp: (String) -> Unit,
@@ -344,6 +413,35 @@ private fun WhiteVpnScreen(
     var l2tpError by remember { mutableStateOf<String?>(null) }
     var l2tpDetailId by remember { mutableStateOf<String?>(null) }
     var l2tpDeleteId by remember { mutableStateOf<String?>(null) }
+    var vpnGateServers by remember { mutableStateOf(VpnGateL2tpCatalog.fallback) }
+    var vpnGateRefresh by remember { mutableIntStateOf(0) }
+    var vpnGateLoading by remember { mutableStateOf(false) }
+    var vpnGateLive by remember { mutableStateOf(false) }
+    var vpnGateExpanded by remember { mutableStateOf(false) }
+    var vpnGateDisplayLimit by remember { mutableIntStateOf(40) }
+    var vpnGateCountry by remember { mutableStateOf("Все") }
+    var vpnGateMessage by remember {
+        mutableStateOf("Резервный список: 16.10.2026 (3 адреса). " +
+            "Для актуального каталога нажмите «Обновить»")
+    }
+    LaunchedEffect(vpnGateRefresh) {
+        if (vpnGateRefresh == 0) return@LaunchedEffect
+        vpnGateLoading = true
+        try {
+            val live = withContext(Dispatchers.IO) { VpnGateL2tpCatalog.fetch() }
+            vpnGateServers = live
+            vpnGateLive = true
+            vpnGateDisplayLimit = 40
+            vpnGateMessage = "Получено с VPN Gate: " + live.size + " L2TP/IPsec серверов"
+        } catch (_: Exception) {
+            vpnGateLive = false
+            vpnGateMessage = "Не удалось загрузить VPN Gate. " +
+                "Показан последний полученный или резервный список."
+        } finally {
+            vpnGateLoading = false
+        }
+    }
+
     var ipSpeedServers by remember { mutableStateOf(IpSpeedL2tpCatalog.snapshot) }
     var ipSpeedRefresh by remember { mutableIntStateOf(0) }
     var ipSpeedLoading by remember { mutableStateOf(false) }
@@ -696,9 +794,26 @@ private fun WhiteVpnScreen(
             Column(Modifier.padding(18.dp)) {
                 Text("L2TP/IPsec PSK • Мои серверы", fontWeight = FontWeight.Bold)
                 Text(
+                    "Встроенный L2TP: экспериментальный IKEv1/IPsec-движок " +
+                        "без независимого криптоаудита. " +
+                        "Не используйте публичные PSK для чувствительных данных.",
+                    color = Color(0xFFF0CE96), fontSize = 12.sp
+                )
+                Text(
+                    "Статус: " + l2tpState.message +
+                        (l2tpState.ipAddress?.let { " • IP " + it } ?: ""),
+                    color = when (l2tpState.phase) {
+                        L2tpConnectionPhase.CONNECTED -> Color(0xFF8CF1C7)
+                        L2tpConnectionPhase.FAILED -> Color(0xFFFFB7B7)
+                        else -> Color(0xFFC7D4E8)
+                    },
+                    fontSize = 13.sp,
+                    modifier = Modifier.padding(vertical = 6.dp)
+                )
+                Text(
                     "Добавляйте и сохраняйте адрес, логин, пароль и IPsec PSK. " +
-                        "Это хранилище настроек, не встроенный L2TP-туннель. На Android 13+ " +
-                        "для соединения потребуется отдельный совместимый VPN-клиент.",
+                        "Подключение использует экспериментальный встроенный VPN-движок. " +
+                        "Если он несовместим с сервером, можно открыть внешний клиент.",
                     color = Color(0xFFC7D4E8),
                     fontSize = 13.sp
                 )
@@ -766,6 +881,27 @@ private fun WhiteVpnScreen(
                                 },
                                 fontSize = 12.sp
                             )
+                            val active = l2tpState.profileId == profile.id
+                            val busy = l2tpState.phase == L2tpConnectionPhase.CONNECTING ||
+                                l2tpState.phase == L2tpConnectionPhase.DISCONNECTING
+                            if (active && (l2tpState.phase == L2tpConnectionPhase.CONNECTED ||
+                                l2tpState.phase == L2tpConnectionPhase.CONNECTING)) {
+                                OutlinedButton(
+                                    onClick = onDisconnectL2tp,
+                                    enabled = !busy,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) { Text("Отключить L2TP") }
+                            } else {
+                                OutlinedButton(
+                                    onClick = { onConnectL2tp(profile.id) },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    enabled = !busy &&
+                                        l2tpState.phase != L2tpConnectionPhase.CONNECTED &&
+                                        state.status == VpnStatus.DISCONNECTED &&
+                                        ikeStatus != Ikev2Status.CONNECTED &&
+                                        ikeStatus != Ikev2Status.CONNECTING
+                                ) { Text("Подключить L2TP (эксперимент)") }
+                            }
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 TextButton(onClick = { l2tpDetailId = profile.id }) {
                                     Text("Параметры")
@@ -903,6 +1039,97 @@ private fun WhiteVpnScreen(
             }
         }
 
+                Spacer(Modifier.height(18.dp))
+                Text(
+                    "VPN Gate • бесплатные L2TP/IPsec",
+                    fontSize = 18.sp, fontWeight = FontWeight.Bold,
+                    color = Color(0xFFF5F8FF)
+                )
+                Text(
+                    "Добровольческие серверы Университета Цукубы. Логин, пароль и PSK: vpn. " +
+                        "Общий ключ не обеспечивает надёжную идентификацию сервера.",
+                    color = Color(0xFFC7D4E8), fontSize = 12.sp
+                )
+                Text(
+                    if (vpnGateLoading) "Получаем доступные L2TP-серверы..." else vpnGateMessage,
+                    color = if (vpnGateLive) Color(0xFF8CF1C7) else Color(0xFFF0CE96),
+                    fontSize = 12.sp, modifier = Modifier.padding(vertical = 8.dp)
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = { vpnGateRefresh += 1 }, enabled = !vpnGateLoading) {
+                        Text("↻ Обновить")
+                    }
+                    OutlinedButton(onClick = { vpnGateExpanded = !vpnGateExpanded }) {
+                        Text(if (vpnGateExpanded) "Свернуть" else "Показать")
+                    }
+                }
+                if (vpnGateExpanded) {
+                    val countryList = listOf("Все") +
+                        vpnGateServers.map { it.country }.distinct().take(12)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        TextButton(onClick = { vpnGateCountry = "Все" }) {
+                            Text("Все", color = Color(0xFF8CF1C7))
+                        }
+                        Text(
+                            "Фильтр по стране ниже • найдено " + vpnGateServers.size,
+                            color = Color(0xFFC7D4E8), fontSize = 12.sp,
+                            modifier = Modifier.padding(top = 14.dp)
+                        )
+                    }
+                    countryList.filter { it != "Все" }.forEach { c ->
+                        TextButton(onClick = {
+                            vpnGateCountry = c
+                            vpnGateDisplayLimit = 40
+                        }) {
+                            Text(
+                                c,
+                                color = if (vpnGateCountry == c) Color(0xFF8CF1C7)
+                                else Color(0xFFC7D4E8)
+                            )
+                        }
+                    }
+                    val shown = vpnGateServers.filter {
+                        vpnGateCountry == "Все" || it.country == vpnGateCountry
+                    }
+                    shown.take(vpnGateDisplayLimit).forEach { server ->
+                        val saved = l2tpEntries.any { it.host == server.host }
+                        Card(
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                            shape = RoundedCornerShape(15.dp),
+                            colors = CardDefaults.cardColors(
+                                containerColor = Color(0xFF30415B),
+                                contentColor = Color(0xFFF5F8FF)
+                            )
+                        ) {
+                            Column(Modifier.padding(13.dp)) {
+                                Text(server.flag + " " + server.country,
+                                    fontWeight = FontWeight.SemiBold)
+                                Text(server.host + " • " + server.uptime,
+                                    color = Color(0xFFC7D4E8), fontSize = 13.sp)
+                                Text("Пинг VPN Gate: " + server.sitePing,
+                                    color = Color(0xFFC7D4E8), fontSize = 12.sp)
+                                TextButton(
+                                    onClick = { onSaveL2tp(VpnGateL2tpCatalog.profile(server)) },
+                                    enabled = !saved
+                                ) { Text(if (saved) "Уже в моих" else "+ В мои L2TP") }
+                            }
+                        }
+                    }
+                    if (shown.size > vpnGateDisplayLimit) {
+                        OutlinedButton(
+                            onClick = { vpnGateDisplayLimit += 40 },
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Text("Показать ещё • " + (shown.size - vpnGateDisplayLimit)) }
+                    }
+                    Text(
+                        "На VPN Gate отображаются только серверы со значком поддержки L2TP. " +
+                            "Адрес может перестать работать в любой момент.",
+                        color = Color(0xFFC7D4E8), fontSize = 12.sp
+                    )
+                }
         Spacer(Modifier.height(12.dp))
         Card(
             modifier = Modifier.fillMaxWidth(),

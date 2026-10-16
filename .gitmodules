@@ -1,0 +1,3 @@
+[submodule "third_party/l2tp"]
+	path = third_party/l2tp
+	url = https://github.com/Flo354/L2TP-IPSec-VPN-for-Android.git

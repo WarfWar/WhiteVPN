@@ -170,3 +170,46 @@ configurations for sensitive information. OpenVPN and WireGuard connections
 remain separate protocols. The WhiteVPN L2TP section currently manages
 profiles but does not implement an embedded L2TP/IPsec tunnel; a compatible
 external client is required on many recent Android devices.
+
+
+## WhiteVPN 0.7.0 — Experimental native L2TP/IPsec and VPN Gate catalog
+
+### Open L2TP/IPsec listings
+- **IPSpeed**: the existing static fallback snapshot and live refresh.
+- **VPN Gate, University of Tsukuba**: a second independent free directory,
+  live HTML refresh from its official website (or official mirror). Only rows
+  with the provider's explicit L2TP/IPsec support icon are accepted, and
+  the host IP is validated. A tiny fallback snapshot is labelled as such.
+- Repeated servers are identified by IP. Saving an already saved IP is blocked
+  in the UI. Other unknown lists are not automatically included: server
+  credentials, L2TP compatibility or provider permissions could not be
+  verified. Do not treat raw VPN Gate total counts as L2TP-ready servers.
+- VPN Gate explicitly publishes Username=vpn, Password=vpn, PSK=vpn.
+  Public shared PSKs provide weak server identity assurances.
+
+### Experimental embedded engine
+- A pinned upstream MIT-licensed Kotlin implementation of IKEv1, IPsec
+  ESP, L2TPv2, and PPP is provided as a Git submodule at
+  third_party/l2tp (commit a9073671291bbececfb4cb6ee9abb521d4f7da9b).
+- The submodule's core Kotlin JVM source is compiled directly into WhiteVPN.
+  The two Android adapters are vendored with MIT attribution.
+- A dedicated Android VpnService handles user VPN consent, foreground
+  notification, local encrypted profile loading, protected UDP sockets,
+  TUN interface establishment, and shutdown.
+- The UI reports CONNECTED only after upstream PPP/TUN listener confirms it.
+  An ordinary ICMP ping is not a successful VPN connection.
+- The experimental engine does not silently downgrade to weak IKE algorithms.
+  Old public VPN Gate/IPSpeed servers may reject the proposals and fail.
+  Protocol-negotiation settings and safe compatibility modes require
+  further work and testing on real servers.
+
+**IMPORTANT:** Upstream explicitly states this entire cryptographic stack
+was AI-written and not independently reviewed by a human security expert.
+Building and passing unit tests do not prove cryptographic soundness,
+interoperability or data-leak prevention. Avoid sensitive uses. Public
+L2TP IPsec PSKs and IKEv1 carry additional inherent security problems.
+
+Some Android builds may manage foreground permissions differently;
+the service and the VPN permission UI require testing on the user's device.
+
+Native L2TP and an active WireGuard/IKEv2 VPN should not be run together.
