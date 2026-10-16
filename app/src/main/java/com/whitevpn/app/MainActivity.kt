@@ -344,6 +344,33 @@ private fun WhiteVpnScreen(
     var l2tpError by remember { mutableStateOf<String?>(null) }
     var l2tpDetailId by remember { mutableStateOf<String?>(null) }
     var l2tpDeleteId by remember { mutableStateOf<String?>(null) }
+    var ipSpeedServers by remember { mutableStateOf(IpSpeedL2tpCatalog.snapshot) }
+    var ipSpeedRefresh by remember { mutableIntStateOf(0) }
+    var ipSpeedLoading by remember { mutableStateOf(false) }
+    var ipSpeedLive by remember { mutableStateOf(false) }
+    var ipSpeedMessage by remember {
+        mutableStateOf("Резервный список от " + IpSpeedL2tpCatalog.snapshotUpdated)
+    }
+    var ipSpeedExpanded by remember { mutableStateOf(true) }
+    var ipSpeedCountry by remember { mutableStateOf("Все") }
+
+    LaunchedEffect(ipSpeedRefresh) {
+        ipSpeedLoading = true
+        try {
+            val latest = withContext(Dispatchers.IO) { IpSpeedL2tpCatalog.fetch() }
+            ipSpeedServers = latest
+            ipSpeedLive = true
+            ipSpeedMessage = "Данные загружены с IPSpeed • " + latest.size + " серверов"
+        } catch (_: Exception) {
+            ipSpeedLive = false
+            ipSpeedMessage = "Не удалось обновить сайт. Показывается встроенный список от " +
+                IpSpeedL2tpCatalog.snapshotUpdated
+            if (ipSpeedServers.isEmpty()) ipSpeedServers = IpSpeedL2tpCatalog.snapshot
+        } finally {
+            ipSpeedLoading = false
+        }
+    }
+
     var l2tpPingRefresh by remember { mutableIntStateOf(0) }
     val l2tpPing = remember { mutableStateMapOf<String, Double?>() }
     LaunchedEffect(l2tpEntries, l2tpPingRefresh) {
@@ -766,6 +793,112 @@ private fun WhiteVpnScreen(
                             "Пароли хранятся зашифрованными и не выводятся в карточках.",
                         color = Color(0xFFC7D4E8), fontSize = 12.sp
                     )
+                }
+
+                Spacer(Modifier.height(18.dp))
+                Text(
+                    "IPSpeed • бесплатные L2TP/IPsec",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 18.sp,
+                    color = Color(0xFFF5F8FF)
+                )
+                Text(
+                    "Общие реквизиты провайдера: логин vpn • пароль vpn • IPsec PSK vpn. " +
+                        "Общие ключи не подходят для конфиденциальных данных. " +
+                        "Доступность каждого сервера не гарантируется.",
+                    color = Color(0xFFC7D4E8),
+                    fontSize = 12.sp
+                )
+                Text(
+                    if (ipSpeedLoading) "Обновляем список..." else ipSpeedMessage,
+                    color = if (ipSpeedLive) Color(0xFF8CF1C7) else Color(0xFFF0CE96),
+                    fontSize = 12.sp,
+                    modifier = Modifier.padding(vertical = 8.dp)
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = { ipSpeedRefresh += 1 },
+                        enabled = !ipSpeedLoading
+                    ) { Text("↻ Обновить") }
+                    OutlinedButton(onClick = { ipSpeedExpanded = !ipSpeedExpanded }) {
+                        Text(if (ipSpeedExpanded) "Свернуть" else "Серверы (" + ipSpeedServers.size + ")")
+                    }
+                }
+                if (ipSpeedExpanded) {
+                    val hasUnsaved = ipSpeedServers.any { server ->
+                        l2tpEntries.none { it.host == server.ip }
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            ipSpeedServers.forEach { server ->
+                                if (l2tpEntries.none { it.host == server.ip }) {
+                                    onSaveL2tp(IpSpeedL2tpCatalog.toProfile(server))
+                                }
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = hasUnsaved
+                    ) { Text("Добавить все новые серверы") }
+                    Text(
+                        "Встроенный пинг IPSpeed относится к их сети, не к твоему телефону. " +
+                            "После добавления сервер появится в списке выше с ICMP-пингом телефона.",
+                        color = Color(0xFFC7D4E8),
+                        fontSize = 12.sp
+                    )
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(5.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        listOf("Все", "Хорватия", "Япония", "США").forEach { country ->
+                            TextButton(onClick = { ipSpeedCountry = country }) {
+                                Text(
+                                    country,
+                                    color = if (ipSpeedCountry == country) {
+                                        Color(0xFF8CF1C7)
+                                    } else {
+                                        Color(0xFFC7D4E8)
+                                    },
+                                    fontSize = 11.sp
+                                )
+                            }
+                        }
+                    }
+                    ipSpeedServers.filter {
+                        ipSpeedCountry == "Все" || it.country == ipSpeedCountry
+                    }.forEach { server ->
+                        val imported = l2tpEntries.any { it.host == server.ip }
+                        Card(
+                            modifier = Modifier.fillMaxWidth().padding(bottom = 7.dp),
+                            shape = RoundedCornerShape(14.dp),
+                            colors = CardDefaults.cardColors(
+                                containerColor = Color(0xFF30415B),
+                                contentColor = Color(0xFFF5F8FF)
+                            )
+                        ) {
+                            Column(Modifier.padding(12.dp)) {
+                                Text(
+                                    server.flag + " " + server.country,
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = 15.sp
+                                )
+                                Text(server.ip, color = Color(0xFFC7D4E8), fontSize = 13.sp)
+                                Text(
+                                    "Uptime (сайт): " + server.uptime +
+                                        " • Пинг (сайт): " + server.publishedPing,
+                                    color = Color(0xFFC7D4E8), fontSize = 11.sp
+                                )
+                                TextButton(
+                                    onClick = {
+                                        onSaveL2tp(IpSpeedL2tpCatalog.toProfile(server))
+                                    },
+                                    enabled = !imported
+                                ) { Text(if (imported) "Сохранён" else "+ В мои L2TP") }
+                            }
+                        }
+                    }
                 }
             }
         }

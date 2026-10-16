@@ -140,3 +140,33 @@ is explicitly user-initiated and carries the usual clipboard-access risks.
 
 Do not share real IPsec PSKs and VPN passwords in screenshots, issues, or
 public GitHub repositories. All VPN profiles are user-supplied.
+
+
+## WhiteVPN 0.6.0 — IPSpeed public L2TP/IPsec servers
+
+The app now includes the publicly advertised **19 L2TP/IPsec PSK endpoints**
+from https://ipspeed.info/free-l2tpipsec.php, as listed on 2026-10-15 19:00 UTC:
+Croatia (2), Japan (16), United States (1).
+
+- The catalog is visible inside **Other protocols > L2TP/IPsec PSK > IPSpeed**.
+- When opened, the app attempts an HTTPS refresh of the source web page with a
+  bounded download size, timeouts, IPv4 validation and strict HTML table parsing.
+  If this fails, an explicitly labeled bundled snapshot remains visible.
+- Users can filter by country, refresh, save an individual server, or import all
+  listed servers. Existing profiles are never overwritten by catalog imports.
+- Saved profiles include the public credentials shown on IPSpeed:
+  username `vpn`, password `vpn`, shared IPsec PSK `vpn`.
+  They are encrypted at rest alongside custom L2TP settings using Android
+  Keystore + AES-GCM. Public data is not a secret, but the same encrypted storage
+  is used consistently.
+- Published site ping and uptime are shown as **site-reported** metadata, not
+  a live test from the phone. Device-side ICMP checks remain available on each
+  saved L2TP profile.
+
+**Security note:** This provider uses public/shared passwords and PSK; these
+endpoints are third-party infrastructure. Do not assume privacy, reliability
+or secure authentication against network interception. Do not use these
+configurations for sensitive information. OpenVPN and WireGuard connections
+remain separate protocols. The WhiteVPN L2TP section currently manages
+profiles but does not implement an embedded L2TP/IPsec tunnel; a compatible
+external client is required on many recent Android devices.
