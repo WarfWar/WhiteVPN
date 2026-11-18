@@ -1,3 +1,9 @@
 [submodule "third_party/l2tp"]
 	path = third_party/l2tp
 	url = https://github.com/Flo354/L2TP-IPSec-VPN-for-Android.git
+[submodule "third_party/byedpi"]
+	path = third_party/byedpi
+	url = https://github.com/hufrea/byedpi.git
+[submodule "third_party/hev-socks5-tunnel"]
+	path = third_party/hev-socks5-tunnel
+	url = https://github.com/heiher/hev-socks5-tunnel.git

@@ -1,7 +1,7 @@
 name: Build Android APK
 on:
   push:
-    branches: [main]
+    branches: [main, feature/antidpi-local-mode]
   pull_request:
   workflow_dispatch:
 permissions:
@@ -9,12 +9,12 @@ permissions:
 jobs:
   android-debug:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 45
     steps:
-      - name: Checkout
+      - name: Checkout with native dependencies
         uses: actions/checkout@v4
         with:
-          submodules: true
+          submodules: recursive
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
@@ -22,8 +22,8 @@ jobs:
           java-version: '17'
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
-      - name: Install Android SDK 35
-        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+      - name: Install SDK, CMake and NDK
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0" "cmake;3.22.1" "ndk;27.2.12479018"
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
@@ -35,7 +35,7 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: WhiteVPN-debug-apk
+          name: WhiteVPN-0.11.0-antidpi-debug
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 14
