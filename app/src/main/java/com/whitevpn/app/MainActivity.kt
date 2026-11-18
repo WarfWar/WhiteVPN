@@ -96,6 +96,10 @@ class MainActivity : ComponentActivity() {
         val phase = AntiDpiRuntime.state.value.phase
         if (phase == AntiDpiPhase.STARTING || phase == AntiDpiPhase.ROUTING ||
             phase == AntiDpiPhase.STOPPING) return
+        if (antiDpiPreferences.targets().isEmpty()) {
+            controller.showMessage("Выбери Telegram, YouTube или Instagram")
+            return
+        }
         pendingAntiDpiStrategy = selection
         try {
             val permission = VpnService.prepare(this)
@@ -111,7 +115,14 @@ class MainActivity : ComponentActivity() {
             AntiDpiRuntime.update(AntiDpiPhase.STARTING, "Запрашиваем запуск движка", selection)
             startForegroundService(Intent(this, AntiDpiVpnService::class.java)
                 .setAction(AntiDpiVpnService.ACTION_START)
-                .putExtra(AntiDpiVpnService.EXTRA_STRATEGY, selection.name))
+                .putExtra(AntiDpiVpnService.EXTRA_STRATEGY, selection.name)
+                .putStringArrayListExtra(
+                    AntiDpiVpnService.EXTRA_TARGETS,
+                    ArrayList(antiDpiPreferences.targets().map { it.name })
+                )
+                .putExtra(AntiDpiVpnService.EXTRA_DNS, antiDpiPreferences.dns().name)
+                .putExtra(AntiDpiVpnService.EXTRA_BLOCK_QUIC,
+                    antiDpiPreferences.blockQuic()))
         } catch (_: Exception) {
             AntiDpiRuntime.update(AntiDpiPhase.FAILED,
                 "Android запретил запуск сервиса Anti-DPI", selection)
@@ -289,6 +300,15 @@ class MainActivity : ComponentActivity() {
             var antiDpiSelection by remember {
                 mutableStateOf(antiDpiPreferences.strategy())
             }
+            var antiDpiTargets by remember {
+                mutableStateOf(antiDpiPreferences.targets())
+            }
+            var antiDpiDns by remember {
+                mutableStateOf(antiDpiPreferences.dns())
+            }
+            var antiDpiBlockQuic by remember {
+                mutableStateOf(antiDpiPreferences.blockQuic())
+            }
             var ikeStatus by remember { mutableStateOf(nativeIkev2.status()) }
             var l2tpEntries by remember {
                 mutableStateOf(try {
@@ -316,9 +336,24 @@ class MainActivity : ComponentActivity() {
                     l2tpState = l2tpState,
                     antiDpiState = antiDpiState,
                     antiDpiSelection = antiDpiSelection,
+                    antiDpiTargets = antiDpiTargets,
+                    antiDpiDns = antiDpiDns,
+                    antiDpiBlockQuic = antiDpiBlockQuic,
                     onSelectAntiDpi = { option ->
                         antiDpiPreferences.saveStrategy(option)
                         antiDpiSelection = option
+                    },
+                    onSelectAntiDpiTargets = { selected ->
+                        antiDpiPreferences.saveTargets(selected)
+                        antiDpiTargets = selected
+                    },
+                    onSelectAntiDpiDns = { selected ->
+                        antiDpiPreferences.saveDns(selected)
+                        antiDpiDns = selected
+                    },
+                    onSelectAntiDpiBlockQuic = { enabled ->
+                        antiDpiPreferences.saveBlockQuic(enabled)
+                        antiDpiBlockQuic = enabled
                     },
                     onStartAntiDpi = { requestAntiDpi(antiDpiSelection) },
                     onStopAntiDpi = ::stopAntiDpi,
@@ -459,7 +494,13 @@ private fun WhiteVpnScreen(
     l2tpState: L2tpConnectionState,
     antiDpiState: AntiDpiState,
     antiDpiSelection: AntiDpiStrategy,
+    antiDpiTargets: Set<AntiDpiTarget>,
+    antiDpiDns: AntiDpiDns,
+    antiDpiBlockQuic: Boolean,
     onSelectAntiDpi: (AntiDpiStrategy) -> Unit,
+    onSelectAntiDpiTargets: (Set<AntiDpiTarget>) -> Unit,
+    onSelectAntiDpiDns: (AntiDpiDns) -> Unit,
+    onSelectAntiDpiBlockQuic: (Boolean) -> Unit,
     onStartAntiDpi: () -> Unit,
     onStopAntiDpi: () -> Unit,
     onConnectL2tp: (String, L2tpCryptoMode) -> Unit,
@@ -699,7 +740,13 @@ private fun WhiteVpnScreen(
             AntiDpiPanel(
                 state = antiDpiState,
                 selection = antiDpiSelection,
+                targets = antiDpiTargets,
+                dns = antiDpiDns,
+                blockQuic = antiDpiBlockQuic,
                 onSelect = onSelectAntiDpi,
+                onTargets = onSelectAntiDpiTargets,
+                onDns = onSelectAntiDpiDns,
+                onBlockQuic = onSelectAntiDpiBlockQuic,
                 onStart = onStartAntiDpi,
                 onStop = onStopAntiDpi,
                 vpnBusy = state.status != VpnStatus.DISCONNECTED ||
