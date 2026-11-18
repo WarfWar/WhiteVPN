@@ -23,6 +23,11 @@ class AntiDpiStrategyTest {
                 pair[0] == "--port" && pair[1] == "1080"
             })
             assertFalse(flags.contains("-D"))
+            // ByeDPI -K requires commas: -Kth is invalid and broke v0.11.0.
+            val protocol = flags.single { flag -> flag.startsWith("-K") }
+            assertTrue("Invalid ByeDPI protocol list: $protocol",
+                Regex("""^-K[thui](,[thui])*$""").matches(protocol))
+
         }
     }
 }

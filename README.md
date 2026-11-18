@@ -355,3 +355,44 @@ stop without socket leaks, reboot/Android VPN revoke, successful HTTPS under
 different strategies, DNS behavior, IPv6 traffic, UDP voice, and compatibility
 with existing WireGuard, IKEv2, and L2TP sessions. This version must not be
 described as a fully tested blocker-bypass or a verified secure VPN.
+
+
+## WhiteVPN 0.11.1 — Telegram, YouTube, Instagram (Anti-DPI repair)
+
+**Why v0.11.0 could not connect:** The native ByeDPI parser expects comma-separated
+protocol names (e.g. `-Kt,h`), whereas the first version supplied `-Kth`.
+The proxy could exit without listening. Version 0.11.1 corrects the options and
+runs a Linux native SOCKS5 smoke test in CI before building Android.
+
+- Intercepts only explicitly selected, installed Android applications:
+  Telegram/Telegram X (including official direct-build Telegram package),
+  YouTube (including some third-party package variants), Instagram.
+  Other apps keep their normal system connection. If none is installed,
+  startup displays an error instead of silently routing the whole device.
+- Uses the active network's DNS server by default (if one is reported).
+  Manual 8.8.8.8, 1.1.1.1 and 9.9.9.9 IPv4 choices are available.
+  This is NOT encrypted DNS/DoH. Public resolvers may be blocked.
+- Optional **YouTube TCP first**: a local packet relay drops outbound UDP
+  destination port 443 for **all selected applications** so QUIC-capable clients
+  can try TCP/HTTPS. Leave Telegram unchecked when enabling this if calls fail.
+- After startup the service tries certificate-verified HTTPS handshakes through
+  the local ByeDPI SOCKS5 proxy to telegram.org, youtube.com and instagram.com.
+  This is a **limited connectivity test**. It cannot verify Telegram's MTProto,
+  YouTube video CDN playback or Instagram reels.
+- The four strategies remain manually selectable. An IP-based
+  block of Telegram servers generally needs an external MTProto/SOCKS5 proxy
+  or a remote VPN; DPI fragmentation alone cannot route around an IP block.
+- IPv6 is allowed to use Android's ordinary connection, rather than being
+  blocked by an IPv4-only tunnel; it is not DPI-processed by this release.
+  This is not a full-device security/privacy VPN. Real-device evaluation is
+  necessary; even green CI does not prove user-facing connectivity.
+
+### Quick trial
+
+1. Turn off WireGuard, IKEv2, L2TP, and any other Android VPN service.
+2. Open Anti-DPI, select **only YouTube**, keep system DNS and TCP Split.
+3. Start and inspect the new HTTPS probe status. Try playing a video.
+4. If the site loads but videos stall, enable the explicit QUIC fallback,
+   disconnect/reconnect, and retry.
+5. Test Instagram and Telegram separately, with QUIC fallback off.
+   Telegram IP blocks need a compatible proxy beyond Anti-DPI.
