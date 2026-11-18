@@ -1,5 +1,7 @@
 package com.whitevpn.app
 
+import com.whitevpn.app.antidpi.*
+
 import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -72,6 +74,58 @@ class MainActivity : ComponentActivity() {
     private val controller get() = (application as WhiteVpnApp).controller
     private val nativeIkev2 get() = (application as WhiteVpnApp).nativeIkev2
     private val l2tpStore get() = (application as WhiteVpnApp).l2tpProfiles
+    private val antiDpiPreferences by lazy { AntiDpiPreferences(this) }
+    private var pendingAntiDpiStrategy = AntiDpiStrategy.SPLIT
+    private val antiDpiPermission = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            launchAntiDpi(pendingAntiDpiStrategy)
+        } else controller.showMessage("Android не разрешил запуск Anti-DPI")
+    }
+
+    private fun requestAntiDpi(selection: AntiDpiStrategy) {
+        if (controller.state.value.status != VpnStatus.DISCONNECTED ||
+            nativeIkev2.status() == Ikev2Status.CONNECTED ||
+            nativeIkev2.status() == Ikev2Status.CONNECTING ||
+            L2tpRuntime.state.value.phase == L2tpConnectionPhase.CONNECTED ||
+            L2tpRuntime.state.value.phase == L2tpConnectionPhase.CONNECTING) {
+            controller.showMessage("Для Anti-DPI сначала отключи другой VPN")
+            return
+        }
+        val phase = AntiDpiRuntime.state.value.phase
+        if (phase == AntiDpiPhase.STARTING || phase == AntiDpiPhase.ROUTING ||
+            phase == AntiDpiPhase.STOPPING) return
+        pendingAntiDpiStrategy = selection
+        try {
+            val permission = VpnService.prepare(this)
+            if (permission == null) launchAntiDpi(selection)
+            else antiDpiPermission.launch(permission)
+        } catch (_: Exception) {
+            controller.showMessage("Не удалось запросить разрешение для Anti-DPI")
+        }
+    }
+
+    private fun launchAntiDpi(selection: AntiDpiStrategy) {
+        try {
+            AntiDpiRuntime.update(AntiDpiPhase.STARTING, "Запрашиваем запуск движка", selection)
+            startForegroundService(Intent(this, AntiDpiVpnService::class.java)
+                .setAction(AntiDpiVpnService.ACTION_START)
+                .putExtra(AntiDpiVpnService.EXTRA_STRATEGY, selection.name))
+        } catch (_: Exception) {
+            AntiDpiRuntime.update(AntiDpiPhase.FAILED,
+                "Android запретил запуск сервиса Anti-DPI", selection)
+        }
+    }
+
+    private fun stopAntiDpi() {
+        try {
+            startService(Intent(this, AntiDpiVpnService::class.java)
+                .setAction(AntiDpiVpnService.ACTION_STOP))
+        } catch (_: Exception) {
+            controller.showMessage("Не удалось остановить Anti-DPI")
+        }
+    }
 
     private var pendingL2tpId: String? = null
     private var pendingL2tpMode: L2tpCryptoMode = L2tpCryptoMode.STRONG
@@ -92,8 +146,10 @@ class MainActivity : ComponentActivity() {
     private fun requestL2tp(profileId: String, mode: L2tpCryptoMode) {
         if (controller.state.value.status != VpnStatus.DISCONNECTED ||
             nativeIkev2.status() == Ikev2Status.CONNECTED ||
-            nativeIkev2.status() == Ikev2Status.CONNECTING) {
-            controller.showMessage("Сначала отключите WireGuard или IKEv2")
+            nativeIkev2.status() == Ikev2Status.CONNECTING ||
+            AntiDpiRuntime.state.value.phase == AntiDpiPhase.STARTING ||
+            AntiDpiRuntime.state.value.phase == AntiDpiPhase.ROUTING) {
+            controller.showMessage("Сначала отключите другой VPN или Anti-DPI")
             return
         }
         val status = L2tpRuntime.state.value.phase
@@ -198,8 +254,10 @@ class MainActivity : ComponentActivity() {
     private fun startIkev2(server: String, identity: String, user: String, password: String) {
         if (controller.state.value.status != VpnStatus.DISCONNECTED ||
             L2tpRuntime.state.value.phase == L2tpConnectionPhase.CONNECTED ||
-            L2tpRuntime.state.value.phase == L2tpConnectionPhase.CONNECTING) {
-            controller.showMessage("Сначала отключите WireGuard или L2TP")
+            L2tpRuntime.state.value.phase == L2tpConnectionPhase.CONNECTING ||
+            AntiDpiRuntime.state.value.phase == AntiDpiPhase.STARTING ||
+            AntiDpiRuntime.state.value.phase == AntiDpiPhase.ROUTING) {
+            controller.showMessage("Сначала отключите другой VPN или Anti-DPI")
             return
         }
         try {
@@ -227,6 +285,10 @@ class MainActivity : ComponentActivity() {
         setContent {
             val current by controller.state.collectAsState()
             val l2tpState by L2tpRuntime.state.collectAsState()
+            val antiDpiState by AntiDpiRuntime.state.collectAsState()
+            var antiDpiSelection by remember {
+                mutableStateOf(antiDpiPreferences.strategy())
+            }
             var ikeStatus by remember { mutableStateOf(nativeIkev2.status()) }
             var l2tpEntries by remember {
                 mutableStateOf(try {
@@ -252,6 +314,14 @@ class MainActivity : ComponentActivity() {
                     ikeStatus = ikeStatus,
                     l2tpEntries = l2tpEntries,
                     l2tpState = l2tpState,
+                    antiDpiState = antiDpiState,
+                    antiDpiSelection = antiDpiSelection,
+                    onSelectAntiDpi = { option ->
+                        antiDpiPreferences.saveStrategy(option)
+                        antiDpiSelection = option
+                    },
+                    onStartAntiDpi = { requestAntiDpi(antiDpiSelection) },
+                    onStopAntiDpi = ::stopAntiDpi,
                     onConnectL2tp = ::requestL2tp,
                     onDisconnectL2tp = ::stopL2tp,
                     onSaveL2tp = { profile ->
@@ -292,8 +362,10 @@ class MainActivity : ComponentActivity() {
                                 if (nativeIkev2.status() == Ikev2Status.CONNECTED ||
                                     nativeIkev2.status() == Ikev2Status.CONNECTING ||
                                     l2tpState.phase == L2tpConnectionPhase.CONNECTED ||
-                                    l2tpState.phase == L2tpConnectionPhase.CONNECTING) {
-                                    controller.showMessage("Сначала отключите IKEv2/IPsec")
+                                    l2tpState.phase == L2tpConnectionPhase.CONNECTING ||
+                                    antiDpiState.phase == AntiDpiPhase.STARTING ||
+                                    antiDpiState.phase == AntiDpiPhase.ROUTING) {
+                                    controller.showMessage("Сначала отключите другой VPN или Anti-DPI")
                                 } else {
                                     requestVpnPermission()
                                 }
@@ -385,6 +457,11 @@ private fun WhiteVpnScreen(
     ikeStatus: Ikev2Status,
     l2tpEntries: List<L2tpProfile>,
     l2tpState: L2tpConnectionState,
+    antiDpiState: AntiDpiState,
+    antiDpiSelection: AntiDpiStrategy,
+    onSelectAntiDpi: (AntiDpiStrategy) -> Unit,
+    onStartAntiDpi: () -> Unit,
+    onStopAntiDpi: () -> Unit,
     onConnectL2tp: (String, L2tpCryptoMode) -> Unit,
     onDisconnectL2tp: () -> Unit,
     onSaveL2tp: (L2tpProfile) -> Boolean,
@@ -596,7 +673,7 @@ private fun WhiteVpnScreen(
         }
 
         Spacer(Modifier.height(20.dp))
-        listOf(listOf("WireGuard", "L2TP"), listOf("IKEv2", "OpenVPN")).forEach { line ->
+        listOf(listOf("WireGuard", "L2TP"), listOf("IKEv2", "OpenVPN"), listOf("Anti-DPI")).forEach { line ->
             Row(
                 modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -616,6 +693,21 @@ private fun WhiteVpnScreen(
                     }
                 }
             }
+        }
+        if (activeProtocol == "Anti-DPI") {
+            Spacer(Modifier.height(18.dp))
+            AntiDpiPanel(
+                state = antiDpiState,
+                selection = antiDpiSelection,
+                onSelect = onSelectAntiDpi,
+                onStart = onStartAntiDpi,
+                onStop = onStopAntiDpi,
+                vpnBusy = state.status != VpnStatus.DISCONNECTED ||
+                    ikeStatus == Ikev2Status.CONNECTED ||
+                    ikeStatus == Ikev2Status.CONNECTING ||
+                    l2tpState.phase == L2tpConnectionPhase.CONNECTED ||
+                    l2tpState.phase == L2tpConnectionPhase.CONNECTING
+            )
         }
         if (activeProtocol == "WireGuard") {
         Spacer(Modifier.height(32.dp))
