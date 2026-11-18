@@ -28,5 +28,21 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="User-initiated L2TP/IPsec VPN tunnel" />
         </service>
+        <service
+            android:name=".antidpi.AntiDpiVpnService"
+            android:process=":antidpi"
+            android:exported="false"
+            android:permission="android.permission.BIND_VPN_SERVICE"
+            android:foregroundServiceType="specialUse">
+            <intent-filter>
+                <action android:name="android.net.VpnService" />
+            </intent-filter>
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="User-initiated local Anti-DPI tunnel" />
+        </service>
+        <receiver
+            android:name=".antidpi.AntiDpiStatusReceiver"
+            android:exported="false" />
     </application>
 </manifest>
