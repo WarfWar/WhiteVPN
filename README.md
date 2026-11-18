@@ -297,3 +297,61 @@ Sources:
 This build has only compile and unit-test verification. True connection
 success and leak-free routing can only be validated against a known-good
 L2TP server on an actual Android phone.
+
+
+## WhiteVPN 0.11.0 — experimental no-root local Anti-DPI
+
+A new **Anti-DPI** tab runs a local SOCKS5 traffic-desynchronization engine and
+routes Android IPv4 packets through it with `VpnService` + `hev-socks5-tunnel`.
+The current Android solution uses the **MIT-licensed hufrea/ByeDPI** core
+rather than launching `nfqws2` directly. The latter depends on NFQUEUE/root;
+both are related DPI-desynchronization approaches but are NOT the same engine.
+
+- No root, remote proxy account, or VPN server is necessary.
+- Four fixed profiles: TCP Split, Disorder, TLS Record and Split + Record.
+- Strategy selection is saved locally; the app asks for Android VPN permission.
+- A foreground notification includes a Stop action. The engine lives in its
+  own `:antidpi` process because the native library cannot be safely restarted
+  in-process. The main WhiteVPN process is kept separate.
+- Starting Anti-DPI is blocked when WireGuard/L2TP/IKEv2 is active; the
+  existing VPN tabs are blocked while Anti-DPI is routing.
+- The UI shows "route started" only after the local SOCKS5 handshake and TUN
+  worker startup. **This does NOT prove that an internet site is reachable.**
+
+**Critical limitations:** This is not an encrypted remote VPN and does not hide
+your public IP. Only Android IPv4 routing is configured; IPv6 may follow the
+system's ordinary path. UDP and Discord voice chat are **not yet verified** and
+may fail in some networks. The device's Private DNS settings and the selected
+provider's DNS/DPI behavior can still interfere. Not all censorship is DPI-based;
+IP blacklists cannot be solved by TCP desynchronization alone. Do not enable
+Android "Block connections without VPN" expecting full VPN privacy from this mode.
+Only one VPN-mode application can run on Android at once.
+
+### Native reproducible build
+
+The repo pins two MIT-licensed sources in recursive Git submodules:
+
+- [hufrea/byedpi](https://github.com/hufrea/byedpi), commit
+  `ba532298de7b28cfe854aea83d061369d13ca290`.
+- [heiher/hev-socks5-tunnel](https://github.com/heiher/hev-socks5-tunnel),
+  commit `4d6c334dbfb68a79d1970c2744e62d09f71df12f`.
+
+The project contains its own JNI integration; it does NOT embed GPL-3.0
+ByeByeDPI Android application code. MIT notices remain available in the
+dependency submodules. Checkout recursively before building:
+
+```sh
+git clone --recurse-submodules https://github.com/WarfWar/WhiteVPN.git
+gradle --no-daemon :app:testDebugUnitTest :app:assembleDebug
+```
+
+On CI, Android NDK 27.2 and CMake 3.22.1 compile native libraries for
+arm64-v8a, armeabi-v7a and x86_64. A local Windows build requires a
+working Android SDK/NDK toolchain; the Linux GitHub Actions workflow is
+the tested build path.
+
+**Validation still needed on real Android phones/Android TV:** engine start and
+stop without socket leaks, reboot/Android VPN revoke, successful HTTPS under
+different strategies, DNS behavior, IPv6 traffic, UDP voice, and compatibility
+with existing WireGuard, IKEv2, and L2TP sessions. This version must not be
+described as a fully tested blocker-bypass or a verified secure VPN.
