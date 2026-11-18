@@ -116,3 +116,98 @@ Java_com_whitevpn_app_antidpi_AntiDpiNative_tunnelStop(
     pthread_once(&hev_once, resolve_hev);
     if (hev_quit) hev_quit();
 }
+
+/*
+ * Optional TUN relay. HEV receives one datagram-oriented Unix socket end,
+ * while this worker forwards complete IP packets to/from Android's TUN fd.
+ * In YouTube TCP-first mode outgoing QUIC UDP/443 packets are dropped, so
+ * clients that implement HTTP/3 fallback can retry on TCP. Telegram calls
+ * also use UDP, which is why this behavior must remain explicitly optional.
+ */
+#include <poll.h>
+#include <unistd.h>
+#include <stdint.h>
+
+static volatile int tunnel_bridge_stop = 0;
+
+JNIEXPORT jintArray JNICALL
+Java_com_whitevpn_app_antidpi_AntiDpiNative_openPacketBridge(
+        JNIEnv *env, jobject self) {
+    (void)self;
+    int sockets[2] = {-1, -1};
+    if (socketpair(AF_UNIX, SOCK_DGRAM, 0, sockets) != 0) return NULL;
+    jintArray result = (*env)->NewIntArray(env, 2);
+    if (!result) {
+        close(sockets[0]); close(sockets[1]);
+        return NULL;
+    }
+    jint values[2] = {sockets[0], sockets[1]};
+    (*env)->SetIntArrayRegion(env, result, 0, 2, values);
+    tunnel_bridge_stop = 0;
+    return result;
+}
+
+static int is_quic_udp443(const uint8_t *ip, ssize_t n) {
+    if (n < 24 || (ip[0] >> 4) != 4 || ip[9] != 17) return 0;
+    const unsigned int ihl = (ip[0] & 15) * 4;
+    if (ihl < 20 || n < (ssize_t)(ihl + 4)) return 0;
+    if ((ip[6] & 0x1f) || ip[7]) return 0; /* later IP fragment */
+    return (((unsigned int)ip[ihl + 2] << 8) | ip[ihl + 3]) == 443;
+}
+
+JNIEXPORT jint JNICALL
+Java_com_whitevpn_app_antidpi_AntiDpiNative_runPacketBridge(
+        JNIEnv *env, jobject self, jint tun_fd, jint socket_fd, jboolean block_quic) {
+    (void)env; (void)self;
+    uint8_t buffer[16384];
+    struct pollfd waits[2] = {
+        { tun_fd, POLLIN, 0 }, { socket_fd, POLLIN, 0 }
+    };
+    int result = 0;
+    while (!tunnel_bridge_stop) {
+        int rc = poll(waits, 2, 250);
+        if (rc < 0) {
+            if (errno == EINTR) continue;
+            result = -1; break;
+        }
+        if (rc == 0) continue;
+        if ((waits[0].revents | waits[1].revents) & (POLLERR | POLLHUP | POLLNVAL)) {
+            if (!tunnel_bridge_stop) result = -1;
+            break;
+        }
+        for (int i = 0; i < 2; ++i) {
+            if (!(waits[i].revents & POLLIN)) continue;
+            ssize_t n = read(waits[i].fd, buffer, sizeof(buffer));
+            if (n <= 0) { result = -1; goto done; }
+            if (i == 0 && block_quic && is_quic_udp443(buffer, n)) continue;
+            /* Never block the relay on a full datagram socket. */
+            if (i == 0) {
+                ssize_t written = send(socket_fd, buffer, (size_t)n,
+                                       MSG_DONTWAIT | MSG_NOSIGNAL);
+                if (written < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+                    result = -1; goto done;
+                }
+            } else {
+                ssize_t written = write(tun_fd, buffer, (size_t)n);
+                if (written < 0) { result = -1; goto done; }
+            }
+        }
+    }
+done:
+    close(socket_fd);
+    return result;
+}
+
+JNIEXPORT void JNICALL
+Java_com_whitevpn_app_antidpi_AntiDpiNative_stopPacketBridge(
+        JNIEnv *env, jobject self) {
+    (void)env; (void)self;
+    tunnel_bridge_stop = 1;
+}
+
+JNIEXPORT void JNICALL
+Java_com_whitevpn_app_antidpi_AntiDpiNative_closePacketFd(
+        JNIEnv *env, jobject self, jint fd) {
+    (void)env; (void)self;
+    if (fd >= 0) close(fd);
+}
