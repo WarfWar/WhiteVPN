@@ -1,8 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <!-- Android 11+ package visibility: only the three opt-in services and variants. -->
+    <queries>
+        <package android:name="org.telegram.messenger" />
+        <package android:name="org.telegram.messenger.web" />
+        <package android:name="org.thunderdog.challegram" />
+        <package android:name="com.google.android.youtube" />
+        <package android:name="app.revanced.android.youtube" />
+        <package android:name="com.google.android.youtube.tv" />
+        <package android:name="com.instagram.android" />
+    </queries>
     <application
         android:name=".WhiteVpnApp"
         android:allowBackup="false"
@@ -28,5 +39,21 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="User-initiated L2TP/IPsec VPN tunnel" />
         </service>
+        <service
+            android:name=".antidpi.AntiDpiVpnService"
+            android:process=":antidpi"
+            android:exported="false"
+            android:permission="android.permission.BIND_VPN_SERVICE"
+            android:foregroundServiceType="specialUse">
+            <intent-filter>
+                <action android:name="android.net.VpnService" />
+            </intent-filter>
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="User-initiated local Anti-DPI tunnel" />
+        </service>
+        <receiver
+            android:name=".antidpi.AntiDpiStatusReceiver"
+            android:exported="false" />
     </application>
 </manifest>

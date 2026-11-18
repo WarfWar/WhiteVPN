@@ -7,15 +7,32 @@ plugins {
 android {
     namespace = "com.whitevpn.app"
     compileSdk = 35
+    ndkVersion = "27.2.12479018"
     defaultConfig {
         applicationId = "com.whitevpn.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 10
-        versionName = "0.10.0"
+        versionCode = 12
+        versionName = "0.11.1"
+        ndk {
+            abiFilters += setOf("arm64-v8a", "armeabi-v7a", "x86_64")
+        }
     }
-    buildFeatures {
-        compose = true
+    // CI runners create different Android debug signing keys each build.
+    // A separate test application ID prevents INSTALL_FAILED_UPDATE_INCOMPATIBLE
+    // and leaves the user's existing WhiteVPN profiles untouched.
+    buildTypes {
+        getByName("debug") {
+            applicationIdSuffix = ".test"
+            versionNameSuffix = "-test"
+        }
+    }
+    buildFeatures { compose = true }
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
     sourceSets.getByName("main").java.srcDir(
         rootProject.file("third_party/l2tp/core/src/main/kotlin")
@@ -25,9 +42,7 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
         isCoreLibraryDesugaringEnabled = true
     }
-    kotlinOptions {
-        jvmTarget = "17"
-    }
+    kotlinOptions { jvmTarget = "17" }
 }
 
 dependencies {
@@ -43,3 +58,22 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
 }
+
+// Compile the MIT-licensed tun2socks engine from pinned, recursive git submodules.
+// NDK output is generated during the build and must not be committed to Git.
+val compileHev by tasks.registering(Exec::class) {
+    group = "build"
+    description = "Compile embedded hev-socks5-tunnel for Android ABIs"
+    val ndkDir = android.ndkDirectory
+    executable = if (System.getProperty("os.name").startsWith("Windows", ignoreCase = true))
+        "$ndkDir/ndk-build.cmd" else "$ndkDir/ndk-build"
+    workingDir = rootProject.projectDir
+    args(
+        "NDK_PROJECT_PATH=app/build/intermediates/hevNdk",
+        "NDK_LIBS_OUT=app/src/main/jniLibs",
+        "APP_BUILD_SCRIPT=third_party/hev-socks5-tunnel/Android.mk",
+        "NDK_APPLICATION_MK=third_party/hev-socks5-tunnel/Application.mk",
+        "APP_ABI=arm64-v8a armeabi-v7a x86_64"
+    )
+}
+tasks.named("preBuild") { dependsOn(compileHev) }

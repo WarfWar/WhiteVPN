@@ -4,6 +4,7 @@
 local.properties
 /build/
 /app/build/
+/app/src/main/jniLibs/
 captures/
 *.apk
 *.aab
