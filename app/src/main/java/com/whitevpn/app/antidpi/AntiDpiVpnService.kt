@@ -259,7 +259,7 @@ class AntiDpiVpnService : VpnService() {
                         InetSocketAddress.createUnresolved(target.probeHost, 443), 4500
                     )
                     connection.soTimeout = 4500
-                    val ssl = SSLSocketFactory.getDefault().createSocket(
+                    val ssl = (SSLSocketFactory.getDefault() as SSLSocketFactory).createSocket(
                         connection, target.probeHost, 443, true
                     ) as SSLSocket
                     ssl.use {
