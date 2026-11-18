@@ -18,6 +18,15 @@ android {
             abiFilters += setOf("arm64-v8a", "armeabi-v7a", "x86_64")
         }
     }
+    // CI runners create different Android debug signing keys each build.
+    // A separate test application ID prevents INSTALL_FAILED_UPDATE_INCOMPATIBLE
+    // and leaves the user's existing WhiteVPN profiles untouched.
+    buildTypes {
+        getByName("debug") {
+            applicationIdSuffix = ".test"
+            versionNameSuffix = "-test"
+        }
+    }
     buildFeatures { compose = true }
     externalNativeBuild {
         cmake {
