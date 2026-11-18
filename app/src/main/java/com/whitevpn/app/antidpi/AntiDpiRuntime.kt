@@ -19,11 +19,11 @@ object AntiDpiRuntime {
     val state = internalState.asStateFlow()
 
     fun update(phase: AntiDpiPhase, detail: String, strategy: AntiDpiStrategy) {
-        internalState.value = AntiDpiState(phase, detail.take(200), strategy)
+        internalState.value = AntiDpiState(phase, detail.take(320), strategy)
     }
 }
 
-/** Explicit internal broadcasts cross the isolated :antidpi process boundary. */
+/** Cross-process status notifications: the native engine is isolated in :antidpi. */
 class AntiDpiStatusReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != AntiDpiVpnService.ACTION_STATUS) return
@@ -49,5 +49,22 @@ class AntiDpiPreferences(context: Context) {
 
     fun saveStrategy(value: AntiDpiStrategy) {
         prefs.edit().putString("strategy", value.name).apply()
+    }
+
+    fun targets(): Set<AntiDpiTarget> =
+        AntiDpiTarget.fromNames(prefs.getStringSet("targets", null))
+
+    fun saveTargets(value: Set<AntiDpiTarget>) {
+        prefs.edit().putStringSet("targets", value.mapTo(mutableSetOf()) { it.name }).apply()
+    }
+
+    fun dns(): AntiDpiDns = AntiDpiDns.fromId(prefs.getString("dns", null))
+    fun saveDns(value: AntiDpiDns) {
+        prefs.edit().putString("dns", value.name).apply()
+    }
+
+    fun blockQuic(): Boolean = prefs.getBoolean("block_quic", false)
+    fun saveBlockQuic(value: Boolean) {
+        prefs.edit().putBoolean("block_quic", value).apply()
     }
 }
