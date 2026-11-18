@@ -13,22 +13,22 @@ enum class AntiDpiStrategy(
     SPLIT(
         "TCP Split",
         "Разделяет первый запрос, в том числе нетипичный TCP Telegram",
-        listOf("-Kthui", "-s1", "-An")
+        listOf("-Kt,h,u,i", "-s1", "-An")
     ),
     DISORDER(
         "Disorder",
         "Изменяет порядок начальных TCP-сегментов",
-        listOf("-Kthui", "-d1", "-An")
+        listOf("-Kt,h,u,i", "-d1", "-An")
     ),
     TLS_RECORD(
         "TLS Record",
         "Разделяет TLS ClientHello вокруг SNI (YouTube/Instagram)",
-        listOf("-Kth", "-r3+s", "-An")
+        listOf("-Kt,h", "-r3+s", "-An")
     ),
     COMBINED(
         "Split + Disorder",
         "Комбинированная стратегия для TLS, если простой Split не помог",
-        listOf("-Kth", "-s1+s", "-d3+s", "-An")
+        listOf("-Kt,h", "-s1+s", "-d3+s", "-An")
     );
 
     fun arguments(): Array<String> = (listOf(
